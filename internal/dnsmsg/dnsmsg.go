@@ -12,69 +12,87 @@
 //	| Authority           |
 //	| Additional          |
 //	+---------------------+
-
 package dnsmsg
-
+ 
 import (
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
 )
-
+ 
 const headerLen = 12
-
-// Record types
+ 
+// Record types.
 const (
-	TypeA 		uint16 = 1
-	TypeNS 		uint16 = 2
-	TypeCNAME	uint16 = 5
-	TypeSOA		uint16 = 6
-	TypePTR		uint16 = 12
-	TypeMX		uint16 = 15
-	TypeTXT		uint16 = 16
-	TypeAAAA	uint16 = 28
-	TypeSRV		uint16 = 33
-	TypeHTTPS	uint16 = 65
+	TypeA     uint16 = 1
+	TypeNS    uint16 = 2
+	TypeCNAME uint16 = 5
+	TypeSOA   uint16 = 6
+	TypePTR   uint16 = 12
+	TypeMX    uint16 = 15
+	TypeTXT   uint16 = 16
+	TypeAAAA  uint16 = 28
+	TypeSRV   uint16 = 33
+	TypeOPT   uint16 = 41 // EDNS pseudo record (RFC 6891)
+	TypeHTTPS uint16 = 65
 )
-
+ 
 // Response codes (RCODE, low 4 bits of the flags).
 const (
-	RcodeSuccess 	= 0
-	RcodeFormErr 	= 1
-	RcodeServFail 	= 2
+	RcodeSuccess  = 0
+	RcodeFormErr  = 1
+	RcodeServFail = 2
+	RcodeNXDomain = 3
 )
-
+ 
 // Bits inside the 16 bit flags field.
 const (
 	flagQR     uint16 = 1 << 15 // 1 = response, 0 = query
 	opcodeMask uint16 = 0xF << 11
+	flagTC     uint16 = 1 << 9 // truncated, client should retry over TCP
 	flagRD     uint16 = 1 << 8 // recursion desired (copied from query)
 	flagRA     uint16 = 1 << 7 // recursion available
+	flagCD     uint16 = 1 << 4 // checking disabled (DNSSEC)
 )
-
+ 
+// MinUDPSize is the classic DNS limit for clients without EDNS.
+const MinUDPSize = 512
+ 
 // BlockedTTL is how long clients may cache a sinkholed answer, in seconds.
 const BlockedTTL = 60
-
+ 
 var (
-	ErrShort 		 = errors.New("message truncated")
-	ErrNotQuery 	 = errors.New("message is a response, not a query")
+	ErrShort         = errors.New("message truncated")
+	ErrNotQuery      = errors.New("message is a response, not a query")
+	ErrNotResponse   = errors.New("message is a query, not a response")
 	ErrQuestionCount = errors.New("expected exactly one question")
-	ErrBadName 		 = errors.New("malformed name")
+	ErrBadName       = errors.New("malformed name")
 )
-
+ 
 // Query is a parsed DNS query with exactly one question.
 type Query struct {
-	ID 	  uint16
+	ID    uint16
 	Flags uint16
 	Name  string // lowercase, no trailing dot, "" for the root
 	Type  uint16
 	Class uint16
-
-	raw []byte 	 // the original message
-	qEnd int	 // offset just past the question section
+ 
+	// From the EDNS OPT record, if the client sent one.
+	EDNS    bool
+	UDPSize int  // largest UDP reply the client accepts
+	DO      bool // DNSSEC OK: client wants signatures
+	CD      bool // checking disabled header flag
+ 
+	raw  []byte // the original message
+	qEnd int    // offset just past the question section
 }
-
+ 
+// Question returns the raw question section bytes.
+func (q *Query) Question() []byte {
+	return q.raw[headerLen:q.qEnd]
+}
+ 
 // Parse reads the header and the single question of a query.
 func Parse(msg []byte) (*Query, error) {
 	if len(msg) < headerLen {
@@ -105,6 +123,23 @@ func Parse(msg []byte) (*Query, error) {
 	q.Class = be16(msg, off+2)
 	q.raw = msg
 	q.qEnd = off + 4
+	q.CD = q.Flags&flagCD != 0
+	q.UDPSize = MinUDPSize
+ 
+	// Queries usually carry one record: the EDNS OPT in the additional
+	// section. Its class field is the client's UDP buffer size, and the
+	// top bit of its extended flags (inside the TTL field) is DO.
+	rrs, err := readRecords(msg, q.qEnd)
+	if err != nil {
+		return nil, err
+	}
+	for _, rr := range rrs {
+		if rr.Section == SectionAdditional && rr.Type == TypeOPT {
+			q.EDNS = true
+			q.UDPSize = max(int(rr.Class), MinUDPSize)
+			q.DO = rr.TTL&0x8000 != 0
+		}
+	}
 	return q, nil
 }
  
@@ -217,7 +252,7 @@ func be16(b []byte, off int) uint16 {
 var typeNames = map[uint16]string{
 	TypeA: "A", TypeNS: "NS", TypeCNAME: "CNAME", TypeSOA: "SOA",
 	TypePTR: "PTR", TypeMX: "MX", TypeTXT: "TXT", TypeAAAA: "AAAA",
-	TypeSRV: "SRV", TypeHTTPS: "HTTPS",
+	TypeSRV: "SRV", TypeOPT: "OPT", TypeHTTPS: "HTTPS",
 }
  
 // TypeName returns a readable name like "AAAA", or "TYPE99" if unknown.
@@ -227,3 +262,4 @@ func TypeName(t uint16) string {
 	}
 	return fmt.Sprintf("TYPE%d", t)
 }
+ 

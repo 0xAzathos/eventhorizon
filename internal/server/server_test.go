@@ -12,7 +12,8 @@ import (
 	"testing"
 	"time"
  
-	"sinkhole/internal/policy"
+	"eventhorizon/internal/cache"
+	"eventhorizon/internal/policy"
 )
  
 func query(id uint16, name string, qtype uint16) []byte {
@@ -50,7 +51,17 @@ func listenBoth(t *testing.T) (net.PacketConn, net.Listener) {
 // upstreamHits counts queries per transport.
 type upstreamHits struct{ udp, tcp atomic.Int32 }
  
-// fakeUpstream echoes every query back with the QR bit set.
+// fakeAnswer turns a query into a reply: QR set, plus one A record
+// (1.2.3.4, TTL 300) pointing back at the question name.
+func fakeAnswer(q []byte) []byte {
+	r := append([]byte(nil), q...)
+	r[2] |= 0x80
+	r[7]++ // ancount
+	r = append(r, 0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0x01, 0x2C, 0, 4, 1, 2, 3, 4)
+	return r
+}
+ 
+// fakeUpstream answers every query with fakeAnswer.
 func fakeUpstream(t *testing.T) (string, *upstreamHits) {
 	t.Helper()
 	pc, ln := listenBoth(t)
@@ -64,8 +75,7 @@ func fakeUpstream(t *testing.T) (string, *upstreamHits) {
 				return
 			}
 			hits.udp.Add(1)
-			buf[2] |= 0x80
-			pc.WriteTo(buf[:n], from)
+			pc.WriteTo(fakeAnswer(buf[:n]), from)
 		}
 	}()
 	go func() {
@@ -82,8 +92,7 @@ func fakeUpstream(t *testing.T) (string, *upstreamHits) {
 						return
 					}
 					hits.tcp.Add(1)
-					msg[2] |= 0x80
-					writeFramed(c, msg)
+					writeFramed(c, fakeAnswer(msg))
 				}
 			}()
 		}
@@ -93,11 +102,17 @@ func fakeUpstream(t *testing.T) (string, *upstreamHits) {
  
 func startServer(t *testing.T, upstream string) string {
 	t.Helper()
+	return startServerWithCache(t, upstream, nil)
+}
+ 
+func startServerWithCache(t *testing.T, upstream string, c *cache.Cache) string {
+	t.Helper()
 	block := policy.NewSet()
 	block.Add("ads.example")
  
 	srv := &Server{
 		Policy:   &policy.Policy{Block: block},
+		Cache:    c,
 		Upstream: upstream,
 		Timeout:  300 * time.Millisecond,
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -177,9 +192,8 @@ func TestUDPAllowedIsForwarded(t *testing.T) {
 	if hits.udp.Load() != 1 || hits.tcp.Load() != 0 {
 		t.Fatalf("upstream udp=%d tcp=%d", hits.udp.Load(), hits.tcp.Load())
 	}
-	q[2] |= 0x80
-	if !bytes.Equal(resp, q) {
-		t.Errorf("relayed reply differs:\n% x\n% x", resp, q)
+	if want := fakeAnswer(q); !bytes.Equal(resp, want) {
+		t.Errorf("relayed reply differs:\n% x\n% x", resp, want)
 	}
 }
  
@@ -258,6 +272,27 @@ func TestFraming(t *testing.T) {
 	}
 	if _, err := readFramed(bytes.NewReader([]byte{0, 9, 'a'})); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Errorf("short body: err = %v", err)
+	}
+}
+ 
+func TestCacheAnswersRepeats(t *testing.T) {
+	up, hits := fakeUpstream(t)
+	srv := startServerWithCache(t, up, cache.New(100, time.Hour))
+ 
+	first := exchangeUDP(t, srv, query(20, "good.example", 1))
+	second := exchangeUDP(t, srv, query(21, "good.example", 1))
+	viaTCP := exchangeTCP(t, dialTCP(t, srv), query(22, "good.example", 1))
+ 
+	if n := hits.udp.Load() + hits.tcp.Load(); n != 1 {
+		t.Fatalf("upstream hits = %d, want 1", n)
+	}
+	for i, resp := range [][]byte{first, second, viaTCP} {
+		if id := binary.BigEndian.Uint16(resp); id != uint16(20+i) {
+			t.Errorf("reply %d has id %d", i, id)
+		}
+		if !bytes.Equal(resp[len(resp)-4:], []byte{1, 2, 3, 4}) {
+			t.Errorf("reply %d lost the answer", i)
+		}
 	}
 }
  

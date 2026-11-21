@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
  
+	"eventhorizon/internal/cache"
 	"eventhorizon/internal/policy"
 	"eventhorizon/internal/server"
 )
@@ -24,17 +25,24 @@ func main() {
 	blocklists := flag.String("blocklist", "", "comma separated blocklist files (hosts or plain domains)")
 	allowlist := flag.String("allowlist", "", "allowlist file (plain domains)")
 	timeout := flag.Duration("timeout", 2*time.Second, "upstream query timeout")
+	cacheSize := flag.Int("cache-size", 10000, "max cached replies, 0 disables the cache")
+	cacheMaxTTL := flag.Duration("cache-max-ttl", time.Hour, "never cache a reply longer than this")
 	flag.Parse()
  
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
  
-	if err := run(log, *listen, *upstream, *blocklists, *allowlist, *timeout); err != nil {
+	var c *cache.Cache
+	if *cacheSize > 0 {
+		c = cache.New(*cacheSize, *cacheMaxTTL)
+	}
+ 
+	if err := run(log, c, *listen, *upstream, *blocklists, *allowlist, *timeout); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
  
-func run(log *slog.Logger, listen, upstream, blocklists, allowlist string, timeout time.Duration) error {
+func run(log *slog.Logger, c *cache.Cache, listen, upstream, blocklists, allowlist string, timeout time.Duration) error {
 	block := policy.NewSet()
 	for _, path := range strings.Split(blocklists, ",") {
 		if path = strings.TrimSpace(path); path == "" {
@@ -70,6 +78,7 @@ func run(log *slog.Logger, listen, upstream, blocklists, allowlist string, timeo
  
 	srv := &server.Server{
 		Policy:   &policy.Policy{Block: block, Allow: allow},
+		Cache:    c,
 		Upstream: upstream,
 		Timeout:  timeout,
 		Log:      log,

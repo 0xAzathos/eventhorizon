@@ -11,12 +11,14 @@ import (
 	"net"
 	"time"
  
+	"eventhorizon/internal/cache"
 	"eventhorizon/internal/dnsmsg"
 	"eventhorizon/internal/policy"
 )
  
 type Server struct {
 	Policy   *policy.Policy
+	Cache    *cache.Cache  // nil disables caching
 	Upstream string        // "1.1.1.1:53", used for both UDP and TCP
 	Timeout  time.Duration // per upstream query
 	Log      *slog.Logger
@@ -37,16 +39,25 @@ func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
  
 	decision := s.Policy.Decide(q.Name)
  
+	// Over UDP the reply must fit the client's buffer; TCP has no such limit.
+	maxSize := 65535
+	if proto == "udp" {
+		maxSize = q.UDPSize
+	}
+ 
 	var resp []byte
 	var action string
 	if decision.Blocked {
 		resp, action = q.Blocked(), "blocked"
+	} else if cached, ok := s.Cache.Get(q, time.Now(), maxSize); ok {
+		resp, action = cached, "cached"
 	} else {
 		resp, err = s.forward(proto, msg, q.ID)
 		if err != nil {
 			s.Log.Warn("upstream failed", "proto", proto, "name", q.Name, "err", err)
 			resp, action = dnsmsg.ErrorResponse(msg, dnsmsg.RcodeServFail), "servfail"
 		} else {
+			s.Cache.Put(q, resp, time.Now())
 			action = "allowed"
 		}
 	}
