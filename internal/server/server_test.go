@@ -111,12 +111,12 @@ func startServerWithCache(t *testing.T, upstream string, c *cache.Cache) string 
 	block.Add("ads.example")
  
 	srv := &Server{
-		Policy:   &policy.Policy{Block: block},
 		Cache:    c,
 		Upstream: upstream,
 		Timeout:  300 * time.Millisecond,
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
+	srv.SetPolicy(&policy.Policy{Block: block})
 	pc, ln := listenBoth(t)
 	go srv.ServeUDP(pc)
 	go srv.ServeTCP(ln)
@@ -293,6 +293,42 @@ func TestCacheAnswersRepeats(t *testing.T) {
 		if !bytes.Equal(resp[len(resp)-4:], []byte{1, 2, 3, 4}) {
 			t.Errorf("reply %d lost the answer", i)
 		}
+	}
+}
+ 
+func TestPolicySwap(t *testing.T) {
+	up, _ := fakeUpstream(t)
+	block := policy.NewSet()
+	srv := &Server{
+		Upstream: up,
+		Timeout:  300 * time.Millisecond,
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	srv.SetPolicy(&policy.Policy{Block: block})
+	pc, ln := listenBoth(t)
+	go srv.ServeUDP(pc)
+	go srv.ServeTCP(ln)
+	addr := pc.LocalAddr().String()
+ 
+	if isBlockedA(exchangeUDP(t, addr, query(1, "new.example", 1))) {
+		t.Fatal("blocked before the swap")
+	}
+	next := policy.NewSet()
+	next.Add("new.example")
+	srv.SetPolicy(&policy.Policy{Block: next})
+	if !isBlockedA(exchangeUDP(t, addr, query(2, "new.example", 1))) {
+		t.Error("not blocked after the swap")
+	}
+}
+ 
+func TestParseQueryLog(t *testing.T) {
+	for in, want := range map[string]QueryLog{"all": LogAll, "blocked": LogBlocked, "none": LogNone} {
+		if got, err := ParseQueryLog(in); err != nil || got != want {
+			t.Errorf("%s: %v %v", in, got, err)
+		}
+	}
+	if _, err := ParseQueryLog("loud"); err == nil {
+		t.Error("accepted an unknown mode")
 	}
 }
  

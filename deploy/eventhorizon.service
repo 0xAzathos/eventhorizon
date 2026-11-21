@@ -1,0 +1,22 @@
+[Unit]
+Description=eventhorizon DNS sinkhole
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/eventhorizon \
+    -listen 127.0.0.1:5300 \
+    -blocklist https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts \
+    -log-queries blocked
+# systemctl reload eventhorizon re-downloads the lists without a restart.
+ExecReload=/usr/bin/kill -HUP $MAINPID
+Restart=on-failure
+
+# Run as a throwaway unprivileged user. StateDirectory creates
+# /var/lib/eventhorizon for the saved list copies and passes it in
+# $STATE_DIRECTORY, which eventhorizon picks up by default.
+DynamicUser=yes
+StateDirectory=eventhorizon
+
+[Install]
+WantedBy=multi-user.target

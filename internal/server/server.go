@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync/atomic"
 	"time"
  
 	"eventhorizon/internal/cache"
@@ -16,12 +17,43 @@ import (
 	"eventhorizon/internal/policy"
 )
  
+// QueryLog chooses which queries get a log line.
+type QueryLog int
+ 
+const (
+	LogAll QueryLog = iota
+	LogBlocked
+	LogNone
+)
+ 
+func ParseQueryLog(s string) (QueryLog, error) {
+	switch s {
+	case "all":
+		return LogAll, nil
+	case "blocked":
+		return LogBlocked, nil
+	case "none":
+		return LogNone, nil
+	}
+	return 0, fmt.Errorf("unknown query log mode %q (want all, blocked or none)", s)
+}
+ 
 type Server struct {
-	Policy   *policy.Policy
 	Cache    *cache.Cache  // nil disables caching
 	Upstream string        // "1.1.1.1:53", used for both UDP and TCP
 	Timeout  time.Duration // per upstream query
 	Log      *slog.Logger
+	QueryLog QueryLog
+ 
+	// The policy is swapped as a whole when lists are reloaded. Queries
+	// running at that moment finish with the old one; the next query sees
+	// the new one. No locks, and no query ever sees a half built policy.
+	policy atomic.Pointer[policy.Policy]
+}
+ 
+// SetPolicy installs p for all queries from now on.
+func (s *Server) SetPolicy(p *policy.Policy) {
+	s.policy.Store(p)
 }
  
 // respond turns one query into one reply. proto is "udp" or "tcp" and is
@@ -37,7 +69,7 @@ func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
 		return dnsmsg.ErrorResponse(msg, dnsmsg.RcodeFormErr)
 	}
  
-	decision := s.Policy.Decide(q.Name)
+	decision := s.policy.Load().Decide(q.Name)
  
 	// Over UDP the reply must fit the client's buffer; TCP has no such limit.
 	maxSize := 65535
@@ -62,16 +94,22 @@ func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
 		}
 	}
  
+	if s.QueryLog == LogAll || (s.QueryLog == LogBlocked && decision.Blocked) {
+		s.logQuery(proto, client, q, action, decision.Rule, start)
+	}
+	return resp
+}
+ 
+func (s *Server) logQuery(proto string, client net.Addr, q *dnsmsg.Query, action, rule string, start time.Time) {
 	s.Log.Info("query",
 		"proto", proto,
 		"client", client.String(),
 		"name", q.Name,
 		"type", dnsmsg.TypeName(q.Type),
 		"action", action,
-		"rule", decision.Rule,
+		"rule", rule,
 		"took", time.Since(start).Round(time.Microsecond),
 	)
-	return resp
 }
  
 // forward sends the original bytes upstream untouched (so EDNS options and
