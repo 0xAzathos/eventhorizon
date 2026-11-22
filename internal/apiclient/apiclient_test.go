@@ -181,3 +181,31 @@ func TestReloadThroughTheMainLoop(t *testing.T) {
 		t.Errorf("reload: %v", err)
 	}
 }
+
+func TestToken(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	h, err := api.New(addr, stats.New(time.Now()), events.NewHub())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Token = "0123456789abcdef0123456789abcdef"
+	srv := &http.Server{Handler: h}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	c := New(addr)
+	if _, err := c.Stats(context.Background(), 5); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("without token: %v, want ErrUnauthorized", err)
+	}
+	if err := c.Stream(context.Background(), func(events.Event) {}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("stream without token: %v, want ErrUnauthorized", err)
+	}
+	c.SetToken(h.Token)
+	if _, err := c.Stats(context.Background(), 5); err != nil {
+		t.Fatalf("with token: %v", err)
+	}
+}

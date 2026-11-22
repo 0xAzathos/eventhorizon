@@ -21,12 +21,18 @@ eventhorizon is a DNS sinkhole that blocks ads and trackers for every app on you
 * **Detects malware behaviour.** A model trained on real domain names flags random looking names made by DGA malware, and per client alerts fire when a device produces bursts of failed lookups (DGA) or streams of data shaped subdomains (DNS tunneling). Popular domains are never flagged.
 * **Caches answers** with proper TTL handling, including negative answers.
 * **Your own rules** win over every list. Add them from telescope or the API; they are saved to a file and survive restarts.
-* **Safe on a network.** Only loopback and private addresses may query by default, every client is rate limited, and strangers get no reply, so it cannot be abused to amplify attacks.
+* **Safe on a network.** Only loopback and private addresses may query by default, every client is rate limited, and strangers get no reply, so with the default settings it cannot be used to amplify attacks on others. The service runs sandboxed as a throwaway user.
 * **No dependencies.** The server is a single static binary using only the Go standard library.
 
 ## Install
 
-Download the archive for your system from the [releases page](https://github.com/0xAzathos/eventhorizon/releases), check it against `checksums.txt`, and unpack it. Each archive holds `eventhorizon`, `telescope`, this README and the license; Linux archives also hold the systemd unit.
+Download the archive for your system from the [releases page](https://github.com/0xAzathos/eventhorizon/releases) and unpack it. Each archive holds `eventhorizon`, `telescope`, this README and the license; Linux archives also hold the systemd unit.
+
+Every release file carries signed build provenance, so you can check it was built by this repository's release workflow and not swapped afterwards:
+
+```sh
+gh attestation verify eventhorizon_v0.1.0_linux_amd64.tar.gz --repo 0xAzathos/eventhorizon
+```
 
 Or build it with Go 1.24 or newer:
 
@@ -72,7 +78,7 @@ telescope
    sudo systemctl enable --now eventhorizon
    ```
 
-   The service runs as a throwaway unprivileged user and keeps its state (downloaded lists and your rules) in `/var/lib/eventhorizon`. Edit the `ExecStart` line to change flags or lists.
+   The service runs as a throwaway unprivileged user in a systemd sandbox and keeps its state (downloaded lists and your rules) in `/var/lib/eventhorizon`. Edit the `ExecStart` line to change flags or lists.
 
 2. Point systemd-resolved at it by creating `/etc/systemd/resolved.conf.d/eventhorizon.conf`:
 
@@ -97,11 +103,30 @@ Run it on an always on machine such as a Raspberry Pi (use the `linux_arm64` or 
 2. Uncomment `AmbientCapabilities=CAP_NET_BIND_SERVICE`, which allows port 53 without root.
 3. Set your router's DHCP DNS server to that address.
 
-Devices pick it up when they renew their lease. Only loopback and private addresses are served unless you change `-allow-clients`. telescope runs on the same machine (over SSH works fine), since the API only listens on loopback.
+Devices pick it up when they renew their lease. Only loopback and private addresses are served unless you change `-allow-clients`. Tailscale addresses are not in the private group; to serve your tailnet, use `-allow-clients loopback,private,100.64.0.0/10`.
+
+Never use `-allow-clients any` on a machine with a public address, such as a VPS: that makes it an open resolver anyone can abuse.
+
+### telescope from another machine
+
+By default the API only listens on loopback, so run telescope on the same machine (over SSH works fine). To reach it across the network, give the API a token:
+
+```sh
+eventhorizon -api 192.168.1.10:5380 -api-token-file /var/lib/eventhorizon/api.token ...
+```
+
+eventhorizon creates the token file on first start, readable only by itself. Copy it to the other machine and point telescope at it:
+
+```sh
+sudo cat /var/lib/eventhorizon/api.token          # on the server
+telescope -addr 192.168.1.10:5380 -token-file api.token
+```
+
+The token is sent in plain HTTP, so only do this on a network you trust, or over Tailscale or an SSH tunnel. eventhorizon refuses to start with a non loopback `-api` and no token. On a shared machine, a token also keeps other local users out.
 
 ## telescope
 
-Run `telescope` on the machine running eventhorizon. Use `-addr` if you moved the API.
+Run `telescope` on the machine running eventhorizon. Use `-addr` if you moved the API, and `-token-file` (or the `EVENTHORIZON_API_TOKEN` variable) if it needs a token.
 
 | Key | Action |
 | --- | --- |
@@ -126,7 +151,7 @@ The footer shows each upstream resolver's health, whether it is encrypted, the b
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `-listen` | `127.0.0.1:5300` | address for DNS over UDP and TCP |
-| `-upstream` | Cloudflare and Quad9 over TLS | resolvers tried in order: `IP[:port]` for plain DNS, `tls://IP[:port]#name` for DNS over TLS |
+| `-upstream` | Cloudflare and Quad9 over TLS | resolvers tried in order: `IP[:port]` for plain DNS, `tls://IP[:port]#name` for DNS over TLS; also used to look up blocklist downloads |
 | `-blocklist` | none | comma separated files or http(s) URLs |
 | `-allowlist` | none | file of domains that are never blocked |
 | `-rules` | state dir `rules.txt` | where your own rules are saved |
@@ -135,9 +160,10 @@ The footer shows each upstream resolver's health, whether it is encrypted, the b
 | `-timeout` | `2s` | time per upstream attempt |
 | `-cache-size` | `10000` | cached replies, `0` disables |
 | `-cache-max-ttl` | `1h` | longest time a reply is cached |
-| `-log-queries` | `all` | `all`, `blocked` (includes suspicious) or `none` |
+| `-log-queries` | `blocked` | `all`, `blocked` (includes suspicious) or `none`; `all` writes a full browsing history to the log |
 | `-detect` | `true` | DGA and tunneling detection |
 | `-api` | `127.0.0.1:5380` | local API for telescope, empty disables it |
+| `-api-token-file` | none | require the token in this file on every API request; created if missing; needed for a non loopback `-api` |
 | `-allow-clients` | `loopback,private` | CIDRs, addresses, or the groups `loopback`, `private`, `any` |
 | `-rate-limit` | `200` | queries per second per client, bursts up to 5x, `0` disables |
 | `-version` | | print the version and exit |
@@ -155,7 +181,11 @@ Every rule covers the domain and all of its subdomains.
 
 ## API
 
-The API listens on loopback only and refuses requests whose `Host` is not loopback, which stops DNS rebinding attacks from web pages. Requests that change something must send the header `X-Eventhorizon-Change` with any value, which a web page cannot do without permission.
+The API shows every query and can change your rules, so it is locked down in layers:
+
+* Without a token it listens on loopback only and refuses requests whose `Host` is not loopback, which stops DNS rebinding attacks from web pages.
+* With `-api-token-file`, every request must send `Authorization: Bearer <token>`.
+* Requests that change something must send the header `X-Eventhorizon-Change` with any value, which a web page cannot do without permission.
 
 | Request | Does |
 | --- | --- |

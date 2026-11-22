@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/0xAzathos/eventhorizon/internal/api"
 	"github.com/0xAzathos/eventhorizon/internal/apiclient"
 	"github.com/0xAzathos/eventhorizon/internal/events"
 	"github.com/0xAzathos/eventhorizon/internal/version"
@@ -20,6 +21,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:5380", "eventhorizon API address")
+	tokenFile := flag.String("token-file", "", "API token file, when eventhorizon runs with -api-token-file (or set EVENTHORIZON_API_TOKEN)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -28,6 +30,17 @@ func main() {
 	}
 
 	client := apiclient.New(*addr)
+	if token := os.Getenv("EVENTHORIZON_API_TOKEN"); token != "" {
+		client.SetToken(token)
+	}
+	if *tokenFile != "" {
+		token, err := api.ReadToken(*tokenFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "telescope:", err)
+			os.Exit(1)
+		}
+		client.SetToken(token)
+	}
 	p := tea.NewProgram(newModel(client, *addr))
 
 	ctx, cancel := context.WithCancel(context.Background())

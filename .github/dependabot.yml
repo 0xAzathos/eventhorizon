@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Both Go modules: the server (no dependencies today) and telescope.
+  - package-ecosystem: gomod
+    directories:
+      - "/"
+      - "/telescope"
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

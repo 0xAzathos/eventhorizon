@@ -9,10 +9,13 @@
 //	DELETE /api/rules?domain=...
 //	POST   /api/reload  download the blocklists again
 //
-// The data is effectively the machine's browsing history, so the API only
-// answers requests addressed to a loopback name. That stops DNS rebinding:
-// a web page that points its own domain at 127.0.0.1 still sends its own
-// domain in the Host header, and gets refused.
+// The data is effectively the machine's browsing history. Without a token
+// the API only answers requests addressed to a loopback name. That stops
+// DNS rebinding: a web page that points its own domain at 127.0.0.1 still
+// sends its own domain in the Host header, and gets refused. The Host check
+// is not a login, though: any program that can connect may send any Host.
+// With a token set (see token.go), every request must prove it knows the
+// token instead, which also works across the network.
 //
 // Changes need one more defense. Browsers let any web page send a simple
 // POST to 127.0.0.1, with the right Host header, without asking (they only
@@ -53,6 +56,7 @@ type Server struct {
 	Hub       *events.Hub
 	Sizes     func() (blocklist, cache int) // optional, filled into snapshots
 	Upstreams func() []upstream.Status      // optional, filled into snapshots
+	Token     string                        // optional; when set, required on every request
 	TopN      int
 	now       func() time.Time
 	mux       *http.ServeMux
@@ -87,7 +91,13 @@ func New(addr string, st *stats.Stats, hub *events.Hub) (*Server, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !s.allows[r.Host] {
+	if s.Token != "" {
+		if !s.authorized(r) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="eventhorizon"`)
+			http.Error(w, "missing or wrong API token", http.StatusUnauthorized)
+			return
+		}
+	} else if !s.allows[r.Host] {
 		http.Error(w, "forbidden host", http.StatusForbidden)
 		return
 	}

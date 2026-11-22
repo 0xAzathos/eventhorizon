@@ -6,7 +6,10 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: write         # create the release
+  id-token: write         # sign the build provenance
+  attestations: write     # store it
+  artifact-metadata: write
 
 jobs:
   release:
@@ -26,6 +29,17 @@ jobs:
 
       - name: Build archives
         run: bash scripts/release.sh "$GITHUB_REF_NAME"
+
+      # Signed proof that these files were built by this workflow from this
+      # repository. Anyone can check a download with:
+      #   gh attestation verify FILE --repo 0xAzathos/eventhorizon
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
 
       - name: Publish
         env:

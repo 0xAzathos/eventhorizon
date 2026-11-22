@@ -24,8 +24,20 @@ import (
 const IdleTimeout = 15 * time.Second
 
 type Client struct {
-	base string
-	http *http.Client
+	base  string
+	http  *http.Client
+	token string
+}
+
+// SetToken makes every request carry the API token (see api.ReadToken).
+func (c *Client) SetToken(token string) { c.token = token }
+
+func (c *Client) newRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err == nil && c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	return req, err
 }
 
 // New returns a client for an API at addr, e.g. "127.0.0.1:5380".
@@ -39,7 +51,7 @@ func New(addr string) *Client {
 func (c *Client) Stats(ctx context.Context, n int) (stats.Snapshot, error) {
 	var snap stats.Snapshot
 	url := fmt.Sprintf("%s/api/stats?top=%d", c.base, n)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return snap, err
 	}
@@ -49,10 +61,20 @@ func (c *Client) Stats(ctx context.Context, n int) (stats.Snapshot, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return snap, fmt.Errorf("stats: %s", resp.Status)
+		return snap, statusError("stats", resp)
 	}
 	err = json.NewDecoder(resp.Body).Decode(&snap)
 	return snap, err
+}
+
+// ErrUnauthorized means the API wants a token this client lacks or got wrong.
+var ErrUnauthorized = errors.New("the API needs a token: start telescope with -token-file")
+
+func statusError(what string, resp *http.Response) error {
+	if resp.StatusCode == http.StatusUnauthorized {
+		return ErrUnauthorized
+	}
+	return fmt.Errorf("%s: %s", what, resp.Status)
 }
 
 // ErrIdle means the stream went silent for longer than IdleTimeout.
@@ -64,7 +86,7 @@ func (c *Client) Stream(ctx context.Context, handle func(events.Event)) error {
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/api/events", nil)
+	req, err := c.newRequest(ctx, http.MethodGet, c.base+"/api/events", nil)
 	if err != nil {
 		return err
 	}
@@ -74,7 +96,7 @@ func (c *Client) Stream(ctx context.Context, handle func(events.Event)) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("events: %s", resp.Status)
+		return statusError("events", resp)
 	}
 
 	// Watchdog: every line pushes the deadline back; silence cancels.
@@ -113,6 +135,9 @@ func Backoff(n int) time.Duration {
 // errorFrom turns a non 2xx response into an error with the server's
 // message when it sent one.
 func errorFrom(resp *http.Response) error {
+	if resp.StatusCode == http.StatusUnauthorized {
+		return ErrUnauthorized
+	}
 	var body struct {
 		Error string `json:"error"`
 	}
@@ -132,7 +157,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		}
 		rd = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rd)
+	req, err := c.newRequest(ctx, method, c.base+path, rd)
 	if err != nil {
 		return err
 	}

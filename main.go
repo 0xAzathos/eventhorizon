@@ -46,6 +46,7 @@ type config struct {
 	queryLog    server.QueryLog
 	detect      bool
 	apiAddr     string
+	apiToken    string // path of the token file, empty for none
 	clients     string
 	rateLimit   float64
 	rulesFile   string
@@ -65,9 +66,10 @@ func main() {
 	flag.DurationVar(&cfg.timeout, "timeout", 2*time.Second, "timeout for each upstream attempt")
 	flag.IntVar(&cfg.cacheSize, "cache-size", 10000, "max cached replies, 0 disables the cache")
 	flag.DurationVar(&cfg.cacheMaxTTL, "cache-max-ttl", time.Hour, "never cache a reply longer than this")
-	flag.StringVar(&queryLog, "log-queries", "all", "which queries to log: all, blocked (includes suspicious) or none")
+	flag.StringVar(&queryLog, "log-queries", "blocked", "which queries to log: all, blocked (includes suspicious) or none")
 	flag.BoolVar(&cfg.detect, "detect", true, "watch for DGA malware and DNS tunneling")
 	flag.StringVar(&cfg.apiAddr, "api", "127.0.0.1:5380", "local API for the TUI, empty disables it")
+	flag.StringVar(&cfg.apiToken, "api-token-file", "", "require the token in this file on every API request, creating it if missing (needed for a non loopback -api)")
 	flag.StringVar(&cfg.clients, "allow-clients", "loopback,private", "who may send queries: CIDRs, addresses, or the groups loopback, private, any")
 	flag.Float64Var(&cfg.rateLimit, "rate-limit", 200, "queries per second per client (bursts up to 5x), 0 disables")
 	flag.Parse()
@@ -82,6 +84,9 @@ func main() {
 	for _, s := range strings.Split(blocklists, ",") {
 		if s = strings.TrimSpace(s); s != "" {
 			cfg.sources = append(cfg.sources, s)
+			if strings.HasPrefix(strings.ToLower(s), "http://") {
+				log.Warn("blocklist is downloaded without encryption; anyone on the path can change it, use https", "url", s)
+			}
 		}
 	}
 	var err error
@@ -171,8 +176,13 @@ func run(log *slog.Logger, cfg config) error {
 		Log:      log,
 		QueryLog: cfg.queryLog,
 	}
+	// Downloads resolve names through the upstreams, not the system: when
+	// this machine's DNS points at eventhorizon, the system resolver would
+	// ask eventhorizon itself, which is not answering yet at startup.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{Timeout: 30 * time.Second, Resolver: pool.Resolver()}).DialContext
 	loader := &lists.Loader{
-		Client:   &http.Client{Timeout: time.Minute},
+		Client:   &http.Client{Timeout: time.Minute, Transport: transport},
 		CacheDir: cfg.cacheDir,
 	}
 
@@ -212,12 +222,25 @@ func run(log *slog.Logger, cfg config) error {
 		"allow_clients", cfg.clients, "rate_limit", cfg.rateLimit)
 
 	if cfg.apiAddr != "" {
-		if !api.IsLoopback(cfg.apiAddr) {
-			log.Warn("API is reachable from the network and shows every query", "addr", cfg.apiAddr)
+		// The API shows every query and can change rules. The Host check
+		// only stops web pages; anything else that can connect may send
+		// any Host. So a network address needs a real secret.
+		if !api.IsLoopback(cfg.apiAddr) && cfg.apiToken == "" {
+			return fmt.Errorf("-api %s is reachable from the network: set -api-token-file too", cfg.apiAddr)
 		}
 		handler, err := api.New(cfg.apiAddr, st, hub)
 		if err != nil {
 			return err
+		}
+		if cfg.apiToken != "" {
+			token, created, err := api.LoadOrCreateToken(cfg.apiToken)
+			if err != nil {
+				return fmt.Errorf("api token: %w", err)
+			}
+			handler.Token = token
+			if created {
+				log.Info("created API token; give it to telescope with -token-file", "file", cfg.apiToken)
+			}
 		}
 		handler.Sizes = func() (int, int) { return srv.BlocklistSize(), c.Len() }
 		handler.Upstreams = pool.Status
@@ -233,7 +256,7 @@ func run(log *slog.Logger, cfg config) error {
 				errs <- err
 			}
 		}()
-		log.Info("api listening", "addr", cfg.apiAddr)
+		log.Info("api listening", "addr", cfg.apiAddr, "token", handler.Token != "")
 	}
 
 	hup := make(chan os.Signal, 1)

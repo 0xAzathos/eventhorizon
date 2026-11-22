@@ -1,22 +1,23 @@
 [Unit]
 Description=eventhorizon DNS sinkhole
+Documentation=https://github.com/0xAzathos/eventhorizon
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 ExecStart=/usr/local/bin/eventhorizon \
     -listen 127.0.0.1:5300 \
-    -blocklist https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts \
-    -log-queries blocked
+    -blocklist https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
 # systemctl reload eventhorizon re-downloads the lists without a restart.
 ExecReload=/usr/bin/kill -HUP $MAINPID
 Restart=on-failure
 
 # Run as a throwaway unprivileged user. StateDirectory creates
-# /var/lib/eventhorizon for the saved list copies and passes it in
-# $STATE_DIRECTORY, which eventhorizon picks up by default.
+# /var/lib/eventhorizon for the saved list copies and your rules, and
+# passes it in $STATE_DIRECTORY, which eventhorizon picks up by default.
 DynamicUser=yes
 StateDirectory=eventhorizon
+UMask=0077
 
 # Serving your whole network: listen on this machine's LAN address,
 # port 53, e.g. "-listen 192.168.1.10:53", and point your router's DHCP
@@ -25,6 +26,36 @@ StateDirectory=eventhorizon
 #AmbientCapabilities=CAP_NET_BIND_SERVICE
 # By default only loopback and private addresses may ask (-allow-clients),
 # and each client is limited to 200 queries per second (-rate-limit).
+#
+# Using telescope from another machine: add
+#   -api 192.168.1.10:5380 -api-token-file /var/lib/eventhorizon/api.token
+# then copy the token with: sudo cat /var/lib/eventhorizon/api.token
+
+# Sandboxing. eventhorizon only needs the network and its state folder;
+# if a bug were ever exploited, these limit what it could reach.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
 
 [Install]
 WantedBy=multi-user.target
