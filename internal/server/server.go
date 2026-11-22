@@ -20,6 +20,7 @@ import (
 	"eventhorizon/internal/policy"
 	"eventhorizon/internal/psl"
 	"eventhorizon/internal/stats"
+	"eventhorizon/internal/upstream"
 )
 
 // QueryLog chooses which queries get a log line.
@@ -48,8 +49,7 @@ type Server struct {
 	Detect   *detect.Detector // nil disables threat detection
 	Events   *events.Hub      // nil: no live viewers
 	Stats    *stats.Stats     // nil: no dashboard statistics
-	Upstream string           // "1.1.1.1:53", used for both UDP and TCP
-	Timeout  time.Duration    // per upstream query
+	Upstream *upstream.Pool   // resolvers with failover, UDP and TCP
 	Log      *slog.Logger
 	QueryLog QueryLog
 
@@ -104,7 +104,12 @@ func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
 	} else if cached, ok := s.Cache.Get(q, time.Now(), maxSize); ok {
 		resp, action = cached, "cached"
 	} else {
-		resp, err = s.forward(proto, msg, q.ID)
+		var res upstream.Result
+		res, err = s.Upstream.Exchange(proto, msg, q.ID)
+		resp = res.Resp
+		if res.Attempts > 1 && err == nil {
+			s.Log.Debug("answered after failover", "name", q.Name, "server", res.Server, "attempts", res.Attempts)
+		}
 		if err != nil {
 			s.Log.Warn("upstream failed", "proto", proto, "name", q.Name, "err", err)
 			resp, action = dnsmsg.ErrorResponse(msg, dnsmsg.RcodeServFail), "servfail"
@@ -187,47 +192,4 @@ func clientIP(a net.Addr) string {
 		return a.String()
 	}
 	return host
-}
-
-// forward sends the original bytes upstream untouched (so EDNS options and
-// everything else survive) and returns the reply whose ID matches.
-func (s *Server) forward(proto string, msg []byte, id uint16) ([]byte, error) {
-	c, err := net.DialTimeout(proto, s.Upstream, s.Timeout)
-	if err != nil {
-		return nil, err
-	}
-	defer c.Close()
-
-	if err := c.SetDeadline(time.Now().Add(s.Timeout)); err != nil {
-		return nil, err
-	}
-
-	if proto == "tcp" {
-		if err := writeFramed(c, msg); err != nil {
-			return nil, err
-		}
-		resp, err := readFramed(c)
-		if err != nil {
-			return nil, err
-		}
-		if got, ok := dnsmsg.ResponseID(resp); !ok || got != id {
-			return nil, fmt.Errorf("upstream reply has wrong id")
-		}
-		return resp, nil
-	}
-
-	if _, err := c.Write(msg); err != nil {
-		return nil, err
-	}
-	buf := make([]byte, 65535)
-	for {
-		n, err := c.Read(buf)
-		if err != nil {
-			return nil, err
-		}
-		// Ignore stray packets; a reply must carry our query's ID.
-		if got, ok := dnsmsg.ResponseID(buf[:n]); ok && got == id {
-			return buf[:n], nil
-		}
-	}
 }

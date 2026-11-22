@@ -1,5 +1,5 @@
 package dnsmsg
- 
+
 import (
 	"bytes"
 	"encoding/binary"
@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 )
- 
+
 // buildQuery encodes a standard query with RD set, the way dig sends one.
 func buildQuery(id uint16, name string, qtype uint16) []byte {
 	b := binary.BigEndian.AppendUint16(nil, id)
@@ -23,7 +23,7 @@ func buildQuery(id uint16, name string, qtype uint16) []byte {
 	b = binary.BigEndian.AppendUint16(b, 1) // class IN
 	return b
 }
- 
+
 func TestParse(t *testing.T) {
 	q, err := Parse(buildQuery(0xBEEF, "Ads.Example.COM", TypeAAAA))
 	if err != nil {
@@ -33,12 +33,12 @@ func TestParse(t *testing.T) {
 		t.Fatalf("got %+v", q)
 	}
 }
- 
+
 func TestBlockedA(t *testing.T) {
 	query := buildQuery(0x1234, "ads.example.com", TypeA)
 	q, _ := Parse(query)
 	resp := q.Blocked()
- 
+
 	if id := be16(resp, 0); id != 0x1234 {
 		t.Errorf("id = %#x", id)
 	}
@@ -60,7 +60,7 @@ func TestBlockedA(t *testing.T) {
 		t.Errorf("answer = % x\nwant     % x", ans, want)
 	}
 }
- 
+
 func TestBlockedAAAA(t *testing.T) {
 	q, _ := Parse(buildQuery(1, "ads.example.com", TypeAAAA))
 	resp := q.Blocked()
@@ -71,7 +71,7 @@ func TestBlockedAAAA(t *testing.T) {
 		t.Error("rdata is not ::")
 	}
 }
- 
+
 func TestBlockedOtherTypeIsNoData(t *testing.T) {
 	q, _ := Parse(buildQuery(1, "ads.example.com", TypeMX))
 	resp := q.Blocked()
@@ -82,21 +82,21 @@ func TestBlockedOtherTypeIsNoData(t *testing.T) {
 		t.Errorf("len = %d, want header + question only", len(resp))
 	}
 }
- 
+
 func TestParseRejects(t *testing.T) {
 	valid := buildQuery(1, "a.example", TypeA)
- 
+
 	response := bytes.Clone(valid)
 	response[2] |= 0x80
- 
+
 	twoQuestions := bytes.Clone(valid)
 	twoQuestions[5] = 2
- 
+
 	pointer := bytes.Clone(valid)
 	pointer[headerLen] = 0xC0
- 
+
 	longName := buildQuery(1, strings.Repeat("abcdefghi.", 26)+"com", TypeA)
- 
+
 	cases := []struct {
 		name string
 		msg  []byte
@@ -117,14 +117,14 @@ func TestParseRejects(t *testing.T) {
 		}
 	}
 }
- 
+
 func TestErrorResponse(t *testing.T) {
 	query := buildQuery(0x4242, "x.example", TypeA)
 	resp := ErrorResponse(query, RcodeServFail)
 	if len(resp) != headerLen || be16(resp, 0) != 0x4242 || be16(resp, 2)&0xF != RcodeServFail {
 		t.Errorf("resp = % x", resp)
 	}
- 
+
 	if ErrorResponse(query[:5], RcodeFormErr) != nil {
 		t.Error("replied to a message without a full header")
 	}
@@ -134,10 +134,9 @@ func TestErrorResponse(t *testing.T) {
 		t.Error("replied to a response")
 	}
 }
- 
+
 func TestTypeName(t *testing.T) {
 	if TypeName(TypeAAAA) != "AAAA" || TypeName(99) != "TYPE99" {
 		t.Error("unexpected type names")
 	}
 }
- 

@@ -301,7 +301,17 @@ func (m model) footer(w int) string {
 	for _, k := range keys {
 		left += sKey.Render(k.k) + sDim.Render(" "+k.d+"   ")
 	}
-	right := sDim.Render(fmt.Sprintf("blocklist %s · cache %s ",
+	// Upstream health: a green or red dot per resolver, so a failover is
+	// visible at a glance.
+	right := ""
+	for _, u := range m.snap.Upstreams {
+		dot := fg(cGreen).Render("●")
+		if !u.Up {
+			dot = fg(cRed).Render("●")
+		}
+		right += dot + sDim.Render(" "+strings.TrimSuffix(u.Addr, ":53")+"  ")
+	}
+	right += sDim.Render(fmt.Sprintf("blocklist %s · cache %s ",
 		dash.Count(uint64(m.snap.Blocklist)), dash.Count(uint64(m.snap.CacheSize))))
 	return spread(w, left, right)
 }

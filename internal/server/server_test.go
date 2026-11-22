@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -15,10 +14,12 @@ import (
 
 	"eventhorizon/internal/cache"
 	"eventhorizon/internal/detect"
+	"eventhorizon/internal/dnsmsg"
 	"eventhorizon/internal/events"
 	"eventhorizon/internal/policy"
 	"eventhorizon/internal/psl"
 	"eventhorizon/internal/stats"
+	"eventhorizon/internal/upstream"
 )
 
 func query(id uint16, name string, qtype uint16) []byte {
@@ -31,6 +32,16 @@ func query(id uint16, name string, qtype uint16) []byte {
 	b = append(b, 0)
 	b = binary.BigEndian.AppendUint16(b, qtype)
 	return binary.BigEndian.AppendUint16(b, 1)
+}
+
+// newPool wraps one fake upstream address in a failover pool.
+func newPool(t *testing.T, addr string) *upstream.Pool {
+	t.Helper()
+	p, err := upstream.New([]string{addr}, 300*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 // listenBoth opens UDP and TCP on the same port, like a real DNS server.
@@ -106,12 +117,12 @@ func fakeUpstreamWith(t *testing.T, answer func([]byte) []byte) (string, *upstre
 			go func() {
 				defer c.Close()
 				for {
-					msg, err := readFramed(c)
+					msg, err := dnsmsg.ReadFramed(c)
 					if err != nil {
 						return
 					}
 					hits.tcp.Add(1)
-					writeFramed(c, answer(msg))
+					dnsmsg.WriteFramed(c, answer(msg))
 				}
 			}()
 		}
@@ -119,20 +130,19 @@ func fakeUpstreamWith(t *testing.T, answer func([]byte) []byte) (string, *upstre
 	return pc.LocalAddr().String(), hits
 }
 
-func startServer(t *testing.T, upstream string) string {
+func startServer(t *testing.T, upstreamAddr string) string {
 	t.Helper()
-	return startServerWithCache(t, upstream, nil)
+	return startServerWithCache(t, upstreamAddr, nil)
 }
 
-func startServerWithCache(t *testing.T, upstream string, c *cache.Cache) string {
+func startServerWithCache(t *testing.T, upstreamAddr string, c *cache.Cache) string {
 	t.Helper()
 	block := policy.NewSet()
 	block.Add("ads.example")
 
 	srv := &Server{
 		Cache:    c,
-		Upstream: upstream,
-		Timeout:  300 * time.Millisecond,
+		Upstream: newPool(t, upstreamAddr),
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	srv.SetPolicy(&policy.Policy{Block: block})
@@ -174,10 +184,10 @@ func dialTCP(t *testing.T, server string) net.Conn {
 
 func exchangeTCP(t *testing.T, c net.Conn, msg []byte) []byte {
 	t.Helper()
-	if err := writeFramed(c, msg); err != nil {
+	if err := dnsmsg.WriteFramed(c, msg); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := readFramed(c)
+	resp, err := dnsmsg.ReadFramed(c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,25 +285,6 @@ func TestMalformedGivesFormErr(t *testing.T) {
 	}
 }
 
-func TestFraming(t *testing.T) {
-	var buf bytes.Buffer
-	writeFramed(&buf, []byte("hello"))
-	if !bytes.Equal(buf.Bytes(), []byte("\x00\x05hello")) {
-		t.Errorf("framed = % x", buf.Bytes())
-	}
-	got, err := readFramed(&buf)
-	if err != nil || string(got) != "hello" {
-		t.Errorf("read back %q, %v", got, err)
-	}
-
-	if _, err := readFramed(bytes.NewReader([]byte{0, 0})); !errors.Is(err, errEmptyMessage) {
-		t.Errorf("zero length: err = %v", err)
-	}
-	if _, err := readFramed(bytes.NewReader([]byte{0, 9, 'a'})); !errors.Is(err, io.ErrUnexpectedEOF) {
-		t.Errorf("short body: err = %v", err)
-	}
-}
-
 func TestCacheAnswersRepeats(t *testing.T) {
 	up, hits := fakeUpstream(t)
 	srv := startServerWithCache(t, up, cache.New(100, time.Hour))
@@ -319,8 +310,7 @@ func TestPolicySwap(t *testing.T) {
 	up, _ := fakeUpstream(t)
 	block := policy.NewSet()
 	srv := &Server{
-		Upstream: up,
-		Timeout:  300 * time.Millisecond,
+		Upstream: newPool(t, up),
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	srv.SetPolicy(&policy.Policy{Block: block})
@@ -378,8 +368,7 @@ func TestDGABurstRaisesAlert(t *testing.T) {
 	logs := new(syncBuffer)
 	srv := &Server{
 		Detect:   detect.New(detect.DefaultConfig(), model, nil, psl.Default),
-		Upstream: up,
-		Timeout:  300 * time.Millisecond,
+		Upstream: newPool(t, up),
 		Log:      slog.New(slog.NewTextHandler(logs, nil)),
 		QueryLog: LogBlocked,
 	}
@@ -420,8 +409,7 @@ func TestFeedsDashboard(t *testing.T) {
 	srv := &Server{
 		Events:   hub,
 		Stats:    st,
-		Upstream: up,
-		Timeout:  300 * time.Millisecond,
+		Upstream: newPool(t, up),
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	srv.SetPolicy(&policy.Policy{Block: block})

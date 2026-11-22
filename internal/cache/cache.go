@@ -11,17 +11,17 @@
 //
 // A nil *Cache is valid and caches nothing.
 package cache
- 
+
 import (
 	"bytes"
 	"container/list"
 	"encoding/binary"
 	"sync"
 	"time"
- 
+
 	"eventhorizon/internal/dnsmsg"
 )
- 
+
 // Key identifies which replies are interchangeable. EDNS and the DNSSEC
 // bits change what the upstream sends back, so they are part of the key.
 type Key struct {
@@ -32,11 +32,11 @@ type Key struct {
 	DO    bool
 	CD    bool
 }
- 
+
 func KeyFor(q *dnsmsg.Query) Key {
 	return Key{q.Name, q.Type, q.Class, q.EDNS, q.DO, q.CD}
 }
- 
+
 type entry struct {
 	key     Key
 	msg     []byte
@@ -45,7 +45,7 @@ type entry struct {
 	stored  time.Time
 	expires time.Time
 }
- 
+
 type Cache struct {
 	mu      sync.Mutex
 	max     int
@@ -53,7 +53,7 @@ type Cache struct {
 	lru     *list.List // front = most recently used; values are *entry
 	entries map[Key]*list.Element
 }
- 
+
 // New returns a cache holding at most maxEntries replies, none kept longer
 // than maxTTL however long their records say.
 func New(maxEntries int, maxTTL time.Duration) *Cache {
@@ -64,7 +64,7 @@ func New(maxEntries int, maxTTL time.Duration) *Cache {
 		entries: make(map[Key]*list.Element),
 	}
 }
- 
+
 // Put stores resp as the answer to q. Returns whether it was cached.
 func (c *Cache) Put(q *dnsmsg.Query, resp []byte, now time.Time) bool {
 	if c == nil || c.max <= 0 {
@@ -79,13 +79,13 @@ func (c *Cache) Put(q *dnsmsg.Query, resp []byte, now time.Time) bool {
 	if !bytes.EqualFold(resp[12:r.QuestionEnd], q.Question()) {
 		return false
 	}
- 
+
 	ttl, ok := lifetime(r)
 	if !ok || ttl == 0 {
 		return false
 	}
 	life := min(time.Duration(ttl)*time.Second, c.maxTTL)
- 
+
 	e := &entry{
 		key:     KeyFor(q),
 		msg:     bytes.Clone(resp),
@@ -99,7 +99,7 @@ func (c *Cache) Put(q *dnsmsg.Query, resp []byte, now time.Time) bool {
 		e.ttlOffs = append(e.ttlOffs, rr.TTLOff)
 		e.ttls = append(e.ttls, rr.TTL)
 	}
- 
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if el, ok := c.entries[e.key]; ok {
@@ -115,7 +115,7 @@ func (c *Cache) Put(q *dnsmsg.Query, resp []byte, now time.Time) bool {
 	}
 	return true
 }
- 
+
 // Get returns a cached reply rewritten for q: q's ID, q's question bytes
 // (keeping the client's letter case), and TTLs reduced by the time spent
 // in the cache. maxSize is the largest reply the client can receive; a
@@ -125,10 +125,10 @@ func (c *Cache) Get(q *dnsmsg.Query, now time.Time, maxSize int) ([]byte, bool) 
 		return nil, false
 	}
 	key := KeyFor(q)
- 
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
- 
+
 	el, ok := c.entries[key]
 	if !ok {
 		return nil, false
@@ -143,11 +143,11 @@ func (c *Cache) Get(q *dnsmsg.Query, now time.Time, maxSize int) ([]byte, bool) 
 		return nil, false
 	}
 	c.lru.MoveToFront(el)
- 
+
 	out := bytes.Clone(e.msg)
 	binary.BigEndian.PutUint16(out, q.ID)
 	copy(out[12:], q.Question())
- 
+
 	elapsed := uint32(now.Sub(e.stored) / time.Second)
 	for i, off := range e.ttlOffs {
 		remaining := uint32(0)
@@ -158,7 +158,7 @@ func (c *Cache) Get(q *dnsmsg.Query, now time.Time, maxSize int) ([]byte, bool) 
 	}
 	return out, true
 }
- 
+
 // Len reports how many replies are stored, expired ones included until
 // they are next looked up.
 func (c *Cache) Len() int {
@@ -169,7 +169,7 @@ func (c *Cache) Len() int {
 	defer c.mu.Unlock()
 	return c.lru.Len()
 }
- 
+
 // lifetime decides how long, in seconds, a reply may be cached.
 func lifetime(r *dnsmsg.Response) (uint32, bool) {
 	hasAnswer := false
@@ -179,7 +179,7 @@ func lifetime(r *dnsmsg.Response) (uint32, bool) {
 			break
 		}
 	}
- 
+
 	switch {
 	case r.Rcode == dnsmsg.RcodeSuccess && hasAnswer:
 		return minTTL(r.Records), true
@@ -189,7 +189,7 @@ func lifetime(r *dnsmsg.Response) (uint32, bool) {
 		return 0, false
 	}
 }
- 
+
 func minTTL(rrs []dnsmsg.RR) uint32 {
 	m := ^uint32(0)
 	for _, rr := range rrs {
@@ -199,7 +199,7 @@ func minTTL(rrs []dnsmsg.RR) uint32 {
 	}
 	return m
 }
- 
+
 // negativeTTL implements RFC 2308 section 5: use the SOA record from the
 // authority section, capped by its MINIMUM field. MINIMUM is the last of
 // the five 32 bit numbers that end the SOA rdata.
@@ -212,4 +212,3 @@ func negativeTTL(rrs []dnsmsg.RR) (uint32, bool) {
 	}
 	return 0, false
 }
- 

@@ -6,6 +6,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"eventhorizon/internal/upstream"
 )
 
 // HistorySeconds is how far back the per second series reaches.
@@ -37,6 +39,9 @@ type Snapshot struct {
 	Blocklist   int       `json:"blocklist_size"`
 	CacheSize   int       `json:"cache_entries"`
 	DroppedLive uint64    `json:"dropped_live_events"`
+
+	// Filled in by the API from the upstream pool.
+	Upstreams []upstream.Status `json:"upstreams"`
 }
 
 type Stats struct {

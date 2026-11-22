@@ -13,16 +13,16 @@
 //	| Additional          |
 //	+---------------------+
 package dnsmsg
- 
+
 import (
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"strings"
 )
- 
+
 const headerLen = 12
- 
+
 // Record types.
 const (
 	TypeA     uint16 = 1
@@ -37,7 +37,7 @@ const (
 	TypeOPT   uint16 = 41 // EDNS pseudo record (RFC 6891)
 	TypeHTTPS uint16 = 65
 )
- 
+
 // Response codes (RCODE, low 4 bits of the flags).
 const (
 	RcodeSuccess  = 0
@@ -45,7 +45,7 @@ const (
 	RcodeServFail = 2
 	RcodeNXDomain = 3
 )
- 
+
 // Bits inside the 16 bit flags field.
 const (
 	flagQR     uint16 = 1 << 15 // 1 = response, 0 = query
@@ -55,13 +55,13 @@ const (
 	flagRA     uint16 = 1 << 7 // recursion available
 	flagCD     uint16 = 1 << 4 // checking disabled (DNSSEC)
 )
- 
+
 // MinUDPSize is the classic DNS limit for clients without EDNS.
 const MinUDPSize = 512
- 
+
 // BlockedTTL is how long clients may cache a sinkholed answer, in seconds.
 const BlockedTTL = 60
- 
+
 var (
 	ErrShort         = errors.New("message truncated")
 	ErrNotQuery      = errors.New("message is a response, not a query")
@@ -69,7 +69,7 @@ var (
 	ErrQuestionCount = errors.New("expected exactly one question")
 	ErrBadName       = errors.New("malformed name")
 )
- 
+
 // Query is a parsed DNS query with exactly one question.
 type Query struct {
 	ID    uint16
@@ -77,28 +77,28 @@ type Query struct {
 	Name  string // lowercase, no trailing dot, "" for the root
 	Type  uint16
 	Class uint16
- 
+
 	// From the EDNS OPT record, if the client sent one.
 	EDNS    bool
 	UDPSize int  // largest UDP reply the client accepts
 	DO      bool // DNSSEC OK: client wants signatures
 	CD      bool // checking disabled header flag
- 
+
 	raw  []byte // the original message
 	qEnd int    // offset just past the question section
 }
- 
+
 // Question returns the raw question section bytes.
 func (q *Query) Question() []byte {
 	return q.raw[headerLen:q.qEnd]
 }
- 
+
 // Parse reads the header and the single question of a query.
 func Parse(msg []byte) (*Query, error) {
 	if len(msg) < headerLen {
 		return nil, ErrShort
 	}
- 
+
 	q := &Query{
 		ID:    be16(msg, 0),
 		Flags: be16(msg, 2),
@@ -109,7 +109,7 @@ func Parse(msg []byte) (*Query, error) {
 	if be16(msg, 4) != 1 {
 		return nil, ErrQuestionCount
 	}
- 
+
 	name, off, err := readName(msg, headerLen)
 	if err != nil {
 		return nil, err
@@ -117,7 +117,7 @@ func Parse(msg []byte) (*Query, error) {
 	if off+4 > len(msg) {
 		return nil, ErrShort
 	}
- 
+
 	q.Name = name
 	q.Type = be16(msg, off)
 	q.Class = be16(msg, off+2)
@@ -125,7 +125,7 @@ func Parse(msg []byte) (*Query, error) {
 	q.qEnd = off + 4
 	q.CD = q.Flags&flagCD != 0
 	q.UDPSize = MinUDPSize
- 
+
 	// Queries usually carry one record: the EDNS OPT in the additional
 	// section. Its class field is the client's UDP buffer size, and the
 	// top bit of its extended flags (inside the TTL field) is DO.
@@ -142,14 +142,14 @@ func Parse(msg []byte) (*Query, error) {
 	}
 	return q, nil
 }
- 
+
 // readName decodes a sequence of length prefixed labels ending in a zero
 // byte. Queries never need compression pointers in the question, so any
 // pointer (top two bits set) is rejected instead of followed.
 func readName(msg []byte, off int) (string, int, error) {
 	var labels []string
 	wireLen := 0
- 
+
 	for {
 		if off >= len(msg) {
 			return "", 0, ErrShort
@@ -174,10 +174,10 @@ func readName(msg []byte, off int) (string, int, error) {
 		labels = append(labels, strings.ToLower(string(msg[off:off+l])))
 		off += l
 	}
- 
+
 	return strings.Join(labels, "."), off, nil
 }
- 
+
 // Blocked builds the sinkhole answer: 0.0.0.0 for A, :: for AAAA, and an
 // empty but successful answer (NODATA) for every other type.
 func (q *Query) Blocked() []byte {
@@ -188,16 +188,16 @@ func (q *Query) Blocked() []byte {
 	case TypeAAAA:
 		rdata = make([]byte, 16)
 	}
- 
+
 	ancount := uint16(0)
 	if rdata != nil {
 		ancount = 1
 	}
- 
+
 	out := make([]byte, 0, q.qEnd+12+len(rdata))
 	out = appendHeader(out, q.ID, responseFlags(q.Flags, RcodeSuccess), 1, ancount)
 	out = append(out, q.raw[headerLen:q.qEnd]...) // echo the question
- 
+
 	if rdata != nil {
 		out = append(out, 0xC0, headerLen) // pointer to the name in the question
 		out = binary.BigEndian.AppendUint16(out, q.Type)
@@ -208,7 +208,7 @@ func (q *Query) Blocked() []byte {
 	}
 	return out
 }
- 
+
 // ErrorResponse builds a header only reply with the given rcode. Returns nil
 // when no reply should be sent: the input is too short to carry an ID, or
 // it is itself a response (answering responses can cause loops).
@@ -222,7 +222,7 @@ func ErrorResponse(msg []byte, rcode int) []byte {
 	}
 	return appendHeader(nil, be16(msg, 0), responseFlags(flags, rcode), 0, 0)
 }
- 
+
 // ResponseID returns the ID of a message, or false if it is too short.
 func ResponseID(msg []byte) (uint16, bool) {
 	if len(msg) < 2 {
@@ -230,11 +230,11 @@ func ResponseID(msg []byte) (uint16, bool) {
 	}
 	return be16(msg, 0), true
 }
- 
+
 func responseFlags(queryFlags uint16, rcode int) uint16 {
 	return flagQR | queryFlags&opcodeMask | queryFlags&flagRD | flagRA | uint16(rcode&0xF)
 }
- 
+
 func appendHeader(b []byte, id, flags, qdcount, ancount uint16) []byte {
 	b = binary.BigEndian.AppendUint16(b, id)
 	b = binary.BigEndian.AppendUint16(b, flags)
@@ -244,17 +244,17 @@ func appendHeader(b []byte, id, flags, qdcount, ancount uint16) []byte {
 	b = binary.BigEndian.AppendUint16(b, 0) // arcount
 	return b
 }
- 
+
 func be16(b []byte, off int) uint16 {
 	return binary.BigEndian.Uint16(b[off:])
 }
- 
+
 var typeNames = map[uint16]string{
 	TypeA: "A", TypeNS: "NS", TypeCNAME: "CNAME", TypeSOA: "SOA",
 	TypePTR: "PTR", TypeMX: "MX", TypeTXT: "TXT", TypeAAAA: "AAAA",
 	TypeSRV: "SRV", TypeOPT: "OPT", TypeHTTPS: "HTTPS",
 }
- 
+
 // TypeName returns a readable name like "AAAA", or "TYPE99" if unknown.
 func TypeName(t uint16) string {
 	if n, ok := typeNames[t]; ok {
@@ -262,4 +262,3 @@ func TypeName(t uint16) string {
 	}
 	return fmt.Sprintf("TYPE%d", t)
 }
- 

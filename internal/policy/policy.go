@@ -4,24 +4,24 @@
 // "ads.tracker.com" and "x.y.tracker.com" are matched too. The allowlist
 // always wins over the blocklist.
 package policy
- 
+
 import (
 	"bufio"
 	"io"
 	"net"
 	"strings"
 )
- 
+
 // Set is a collection of domains with parent domain matching.
 // A nil *Set is valid and matches nothing.
 type Set struct {
 	domains map[string]struct{}
 }
- 
+
 func NewSet() *Set {
 	return &Set{domains: make(map[string]struct{})}
 }
- 
+
 // Hostnames that appear in hosts files but are not things to block.
 var ignored = map[string]bool{
 	"localhost": true, "localhost.localdomain": true, "local": true,
@@ -29,11 +29,11 @@ var ignored = map[string]bool{
 	"ip6-localnet": true, "ip6-mcastprefix": true, "ip6-allnodes": true,
 	"ip6-allrouters": true, "ip6-allhosts": true,
 }
- 
+
 func normalize(domain string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(domain), "."))
 }
- 
+
 // Add inserts a domain. Returns false if it was empty, ignored, or already
 // present.
 func (s *Set) Add(domain string) bool {
@@ -47,14 +47,14 @@ func (s *Set) Add(domain string) bool {
 	s.domains[d] = struct{}{}
 	return true
 }
- 
+
 func (s *Set) Len() int {
 	if s == nil {
 		return 0
 	}
 	return len(s.domains)
 }
- 
+
 // Match checks name and each of its parents, most specific first.
 // Returns the entry that matched.
 func (s *Set) Match(name string) (string, bool) {
@@ -72,7 +72,7 @@ func (s *Set) Match(name string) (string, bool) {
 		name = name[i+1:]
 	}
 }
- 
+
 // Load reads a hosts file ("0.0.0.0 ads.example.com") or a plain domain
 // list (one domain per line). Comments start with '#'. Returns how many new
 // domains were added.
@@ -97,18 +97,18 @@ func (s *Set) Load(r io.Reader) (int, error) {
 	}
 	return added, sc.Err()
 }
- 
+
 // Decision is the outcome for one name, with the rule that caused it.
 type Decision struct {
 	Blocked bool
 	Rule    string // the matching list entry, "" if nothing matched
 }
- 
+
 type Policy struct {
 	Block *Set
 	Allow *Set
 }
- 
+
 func (p *Policy) Decide(name string) Decision {
 	if rule, ok := p.Allow.Match(name); ok {
 		return Decision{Blocked: false, Rule: rule}
@@ -118,4 +118,3 @@ func (p *Policy) Decide(name string) Decision {
 	}
 	return Decision{}
 }
- 

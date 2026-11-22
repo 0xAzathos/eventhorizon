@@ -19,16 +19,18 @@ import (
 
 	"eventhorizon/internal/events"
 	"eventhorizon/internal/stats"
+	"eventhorizon/internal/upstream"
 )
 
 type Server struct {
-	Stats  *stats.Stats
-	Hub    *events.Hub
-	Sizes  func() (blocklist, cache int) // optional, filled into snapshots
-	TopN   int
-	now    func() time.Time
-	mux    *http.ServeMux
-	allows map[string]bool
+	Stats     *stats.Stats
+	Hub       *events.Hub
+	Sizes     func() (blocklist, cache int) // optional, filled into snapshots
+	Upstreams func() []upstream.Status      // optional, filled into snapshots
+	TopN      int
+	now       func() time.Time
+	mux       *http.ServeMux
+	allows    map[string]bool
 }
 
 // New builds the handler for an API listening on addr ("127.0.0.1:5380").
@@ -70,6 +72,9 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	snap := s.Stats.Snapshot(s.now(), n)
 	if s.Sizes != nil {
 		snap.Blocklist, snap.CacheSize = s.Sizes()
+	}
+	if s.Upstreams != nil {
+		snap.Upstreams = s.Upstreams()
 	}
 	snap.DroppedLive = s.Hub.Dropped()
 

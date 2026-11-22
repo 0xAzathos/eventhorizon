@@ -25,6 +25,7 @@ import (
 	"eventhorizon/internal/psl"
 	"eventhorizon/internal/server"
 	"eventhorizon/internal/stats"
+	"eventhorizon/internal/upstream"
 )
 
 type config struct {
@@ -46,12 +47,12 @@ func main() {
 	var cfg config
 	var blocklists, queryLog string
 	flag.StringVar(&cfg.listen, "listen", "127.0.0.1:5300", "address to listen on (UDP and TCP)")
-	flag.StringVar(&cfg.upstream, "upstream", "1.1.1.1:53", "upstream resolver")
+	flag.StringVar(&cfg.upstream, "upstream", "1.1.1.1:53,9.9.9.9:53", "comma separated upstream resolvers, tried in order with failover")
 	flag.StringVar(&blocklists, "blocklist", "", "comma separated blocklist files or http(s) URLs")
 	flag.StringVar(&cfg.allowlist, "allowlist", "", "allowlist file (plain domains)")
 	flag.StringVar(&cfg.cacheDir, "list-cache-dir", defaultListCacheDir(), "where downloaded lists are kept as fallback")
 	flag.DurationVar(&cfg.refresh, "refresh", 24*time.Hour, "reload lists this often, 0 disables")
-	flag.DurationVar(&cfg.timeout, "timeout", 2*time.Second, "upstream query timeout")
+	flag.DurationVar(&cfg.timeout, "timeout", 2*time.Second, "timeout for each upstream attempt")
 	flag.IntVar(&cfg.cacheSize, "cache-size", 10000, "max cached replies, 0 disables the cache")
 	flag.DurationVar(&cfg.cacheMaxTTL, "cache-max-ttl", time.Hour, "never cache a reply longer than this")
 	flag.StringVar(&queryLog, "log-queries", "all", "which queries to log: all, blocked (includes suspicious) or none")
@@ -109,13 +110,23 @@ func run(log *slog.Logger, cfg config) error {
 	hub := events.NewHub()
 	st := stats.New(time.Now())
 
+	var upstreams []string
+	for _, u := range strings.Split(cfg.upstream, ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			upstreams = append(upstreams, u)
+		}
+	}
+	pool, err := upstream.New(upstreams, cfg.timeout)
+	if err != nil {
+		return err
+	}
+
 	srv := &server.Server{
 		Cache:    c,
 		Detect:   det,
 		Events:   hub,
 		Stats:    st,
-		Upstream: cfg.upstream,
-		Timeout:  cfg.timeout,
+		Upstream: pool,
 		Log:      log,
 		QueryLog: cfg.queryLog,
 	}
@@ -158,6 +169,7 @@ func run(log *slog.Logger, cfg config) error {
 			return err
 		}
 		handler.Sizes = func() (int, int) { return srv.BlocklistSize(), c.Len() }
+		handler.Upstreams = pool.Status
 		apiLn, err := net.Listen("tcp", cfg.apiAddr)
 		if err != nil {
 			return err

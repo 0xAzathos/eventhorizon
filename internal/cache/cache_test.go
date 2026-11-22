@@ -1,17 +1,17 @@
 package cache
- 
+
 import (
 	"bytes"
 	"encoding/binary"
 	"strings"
 	"testing"
 	"time"
- 
+
 	"eventhorizon/internal/dnsmsg"
 )
- 
+
 var t0 = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
- 
+
 func rawQuery(id uint16, name string, qtype uint16) []byte {
 	b := binary.BigEndian.AppendUint16(nil, id)
 	b = append(b, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0)
@@ -23,7 +23,7 @@ func rawQuery(id uint16, name string, qtype uint16) []byte {
 	b = binary.BigEndian.AppendUint16(b, qtype)
 	return binary.BigEndian.AppendUint16(b, 1)
 }
- 
+
 func parse(t *testing.T, msg []byte) *dnsmsg.Query {
 	t.Helper()
 	q, err := dnsmsg.Parse(msg)
@@ -32,7 +32,7 @@ func parse(t *testing.T, msg []byte) *dnsmsg.Query {
 	}
 	return q
 }
- 
+
 // reply turns a raw query into a NOERROR response with one A record per ttl.
 func reply(query []byte, ttls ...uint32) []byte {
 	r := bytes.Clone(query)
@@ -46,7 +46,7 @@ func reply(query []byte, ttls ...uint32) []byte {
 	}
 	return r
 }
- 
+
 // nxdomain builds an NXDOMAIN reply with an SOA in the authority section.
 func nxdomain(query []byte, soaTTL, minimum uint32) []byte {
 	r := bytes.Clone(query)
@@ -62,7 +62,7 @@ func nxdomain(query []byte, soaTTL, minimum uint32) []byte {
 	r = binary.BigEndian.AppendUint16(r, uint16(len(rdata)))
 	return append(r, rdata...)
 }
- 
+
 func answerTTLs(t *testing.T, msg []byte) []uint32 {
 	t.Helper()
 	r, err := dnsmsg.ParseResponse(msg)
@@ -75,14 +75,14 @@ func answerTTLs(t *testing.T, msg []byte) []uint32 {
 	}
 	return out
 }
- 
+
 func TestHitRewritesIDAndCountsDownTTL(t *testing.T) {
 	c := New(100, time.Hour)
 	first := rawQuery(1, "example.com", dnsmsg.TypeA)
 	if !c.Put(parse(t, first), reply(first, 300, 120), t0) {
 		t.Fatal("not cached")
 	}
- 
+
 	again := parse(t, rawQuery(2, "example.com", dnsmsg.TypeA))
 	got, ok := c.Get(again, t0.Add(45*time.Second), 512)
 	if !ok {
@@ -96,12 +96,12 @@ func TestHitRewritesIDAndCountsDownTTL(t *testing.T) {
 		t.Errorf("ttls = %v, want [255 75]", ttls)
 	}
 }
- 
+
 func TestExpiresAtSmallestTTL(t *testing.T) {
 	c := New(100, time.Hour)
 	q := rawQuery(1, "example.com", dnsmsg.TypeA)
 	c.Put(parse(t, q), reply(q, 300, 120), t0)
- 
+
 	if _, ok := c.Get(parse(t, q), t0.Add(119*time.Second), 512); !ok {
 		t.Error("expired too early")
 	}
@@ -112,7 +112,7 @@ func TestExpiresAtSmallestTTL(t *testing.T) {
 		t.Error("expired entry not removed")
 	}
 }
- 
+
 func TestMaxTTLCapsLifetime(t *testing.T) {
 	c := New(100, time.Minute)
 	q := rawQuery(1, "example.com", dnsmsg.TypeA)
@@ -121,12 +121,12 @@ func TestMaxTTLCapsLifetime(t *testing.T) {
 		t.Error("kept beyond maxTTL")
 	}
 }
- 
+
 func TestKeepsClientLetterCase(t *testing.T) {
 	c := New(100, time.Hour)
 	q := rawQuery(1, "example.com", dnsmsg.TypeA)
 	c.Put(parse(t, q), reply(q, 300), t0)
- 
+
 	mixed := rawQuery(2, "ExAmPlE.CoM", dnsmsg.TypeA)
 	got, ok := c.Get(parse(t, mixed), t0, 512)
 	if !ok {
@@ -136,7 +136,7 @@ func TestKeepsClientLetterCase(t *testing.T) {
 		t.Error("question case not copied from the new query")
 	}
 }
- 
+
 func TestNegativeCaching(t *testing.T) {
 	c := New(100, time.Hour)
 	q := rawQuery(1, "nope.example.com", dnsmsg.TypeA)
@@ -152,18 +152,18 @@ func TestNegativeCaching(t *testing.T) {
 		t.Error("kept past SOA MINIMUM")
 	}
 }
- 
+
 func TestNotCached(t *testing.T) {
 	c := New(100, time.Hour)
 	q := rawQuery(1, "example.com", dnsmsg.TypeA)
- 
+
 	truncated := reply(q, 300)
 	truncated[2] |= 0x02
 	servfail := reply(q)
 	servfail[3] |= dnsmsg.RcodeServFail
 	nodataNoSOA := reply(q)
 	other := reply(rawQuery(1, "other.com", dnsmsg.TypeA), 300)
- 
+
 	cases := map[string][]byte{
 		"truncated":      truncated,
 		"servfail":       servfail,
@@ -178,7 +178,7 @@ func TestNotCached(t *testing.T) {
 		}
 	}
 }
- 
+
 func TestTooBigForClient(t *testing.T) {
 	c := New(100, time.Hour)
 	q := rawQuery(1, "example.com", dnsmsg.TypeA)
@@ -197,18 +197,18 @@ func TestTooBigForClient(t *testing.T) {
 		t.Error("TCP sized client should get it")
 	}
 }
- 
+
 func TestLRUEviction(t *testing.T) {
 	c := New(2, time.Hour)
 	a := rawQuery(1, "a.com", dnsmsg.TypeA)
 	b := rawQuery(1, "b.com", dnsmsg.TypeA)
 	d := rawQuery(1, "d.com", dnsmsg.TypeA)
- 
+
 	c.Put(parse(t, a), reply(a, 300), t0)
 	c.Put(parse(t, b), reply(b, 300), t0)
 	c.Get(parse(t, a), t0, 512) // a is now most recently used
 	c.Put(parse(t, d), reply(d, 300), t0)
- 
+
 	if _, ok := c.Get(parse(t, b), t0, 512); ok {
 		t.Error("b should have been evicted")
 	}
@@ -218,7 +218,7 @@ func TestLRUEviction(t *testing.T) {
 		}
 	}
 }
- 
+
 func TestTypeIsPartOfKey(t *testing.T) {
 	c := New(100, time.Hour)
 	q := rawQuery(1, "example.com", dnsmsg.TypeA)
@@ -227,7 +227,7 @@ func TestTypeIsPartOfKey(t *testing.T) {
 		t.Error("A answer served for AAAA")
 	}
 }
- 
+
 func TestNilCache(t *testing.T) {
 	var c *Cache
 	q := rawQuery(1, "example.com", dnsmsg.TypeA)
@@ -238,4 +238,3 @@ func TestNilCache(t *testing.T) {
 		t.Error("nil cache returned something")
 	}
 }
- 

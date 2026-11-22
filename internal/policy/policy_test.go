@@ -1,22 +1,22 @@
 package policy
- 
+
 import (
 	"strings"
 	"testing"
 )
- 
+
 const hostsFile = `
 # Title: example blocklist
 127.0.0.1 localhost
 ::1 ip6-localhost ip6-loopback
 0.0.0.0 0.0.0.0
- 
+
 0.0.0.0 tracker.com
 0.0.0.0 ADS.Example.org.   # trailing dot and caps
 0.0.0.0 a.one b.two
 0.0.0.0 tracker.com
 `
- 
+
 func TestLoadHosts(t *testing.T) {
 	s := NewSet()
 	n, err := s.Load(strings.NewReader(hostsFile))
@@ -35,7 +35,7 @@ func TestLoadHosts(t *testing.T) {
 		t.Error("localhost should be ignored")
 	}
 }
- 
+
 func TestLoadPlainList(t *testing.T) {
 	s := NewSet()
 	n, _ := s.Load(strings.NewReader("evil.net\n# comment\nbad.io\n"))
@@ -43,11 +43,11 @@ func TestLoadPlainList(t *testing.T) {
 		t.Fatalf("added %d", n)
 	}
 }
- 
+
 func TestParentMatching(t *testing.T) {
 	s := NewSet()
 	s.Add("tracker.com")
- 
+
 	cases := map[string]bool{
 		"tracker.com":      true,
 		"ads.tracker.com":  true,
@@ -66,13 +66,13 @@ func TestParentMatching(t *testing.T) {
 		}
 	}
 }
- 
+
 func TestAllowWins(t *testing.T) {
 	block, allow := NewSet(), NewSet()
 	block.Add("example.com")
 	allow.Add("good.example.com")
 	p := Policy{Block: block, Allow: allow}
- 
+
 	if d := p.Decide("ads.example.com"); !d.Blocked || d.Rule != "example.com" {
 		t.Errorf("ads: %+v", d)
 	}
@@ -83,7 +83,7 @@ func TestAllowWins(t *testing.T) {
 		t.Errorf("other: %+v", d)
 	}
 }
- 
+
 func TestNilAllowlist(t *testing.T) {
 	block := NewSet()
 	block.Add("x.com")
@@ -92,4 +92,3 @@ func TestNilAllowlist(t *testing.T) {
 		t.Error("expected block with nil allowlist")
 	}
 }
- 
