@@ -1,6 +1,15 @@
-# eventhorizon
+<p align="center">
+  <img src="docs/banner.png" alt="eventhorizon: a DNS sinkhole. Ads, trackers and malware fall in. Nothing comes back." width="100%">
+</p>
 
-A DNS sinkhole that blocks ads and trackers for every app on your machine or your whole network, and watches for malware while it does. It comes with **telescope**, a terminal dashboard where you see every query live and block or allow a domain with one key.
+<p align="center">
+  <a href="https://github.com/0xAzathos/eventhorizon/actions/workflows/ci.yml"><img src="https://github.com/0xAzathos/eventhorizon/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/0xAzathos/eventhorizon/releases"><img src="https://img.shields.io/github/v/release/0xAzathos/eventhorizon?color=A78BFA" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22D3EE" alt="MIT license"></a>
+  <a href="https://azathos.com"><img src="https://img.shields.io/badge/made%20by-azathos.com-F472B6" alt="Made by azathos.com"></a>
+</p>
+
+eventhorizon is a DNS sinkhole that blocks ads and trackers for every app on your machine or your whole network, and watches for malware while it does. It comes with **telescope**, a terminal dashboard where you see every query live and block or allow a domain with one key.
 
 ![telescope](docs/telescope.png)
 
@@ -160,3 +169,8 @@ The API listens on loopback only and refuses requests whose `Host` is not loopba
 ## License
 
 MIT, see [LICENSE](LICENSE).
+
+<p align="center">
+  <a href="https://azathos.com"><img src="docs/logo.png" alt="" width="56"></a><br>
+  <sub>Made by <a href="https://github.com/0xAzathos">0xAzathos</a> · <a href="https://azathos.com">azathos.com</a></sub>
+</p>
