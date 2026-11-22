@@ -135,10 +135,35 @@ func TestBarsKeepsSmallValuesVisible(t *testing.T) {
 	}
 }
 
-func TestBarsRightAlignsShortSeries(t *testing.T) {
-	rows, _ := Bars(secs(5), 4, 1)
+func TestColumns(t *testing.T) {
+	cases := []struct{ seconds, width, shown, colW int }{
+		{120, 80, 80, 1},   // narrow: newest 80 seconds, one column each
+		{120, 120, 120, 1}, // exact fit
+		{120, 1300, 120, 10},
+		{0, 50, 0, 1},
+		{5, 0, 0, 1},
+	}
+	for _, c := range cases {
+		shown, colW := Columns(c.seconds, c.width)
+		if shown != c.shown || colW != c.colW {
+			t.Errorf("Columns(%d, %d) = %d, %d; want %d, %d", c.seconds, c.width, shown, colW, c.shown, c.colW)
+		}
+	}
+}
+
+func TestBarsWideColumnsWithGaps(t *testing.T) {
+	rows, _ := Bars(secs(1, 2), 8, 1)
 	shape, _ := render(rows)
-	if shape != "   █\n" {
+	// 4 columns per second: a 3 wide bar plus a 1 column gap.
+	if shape != "▄▄▄ ███ \n" {
+		t.Errorf("shape %q", shape)
+	}
+}
+
+func TestBarsRightAlignsLeftover(t *testing.T) {
+	rows, _ := Bars(secs(5, 5), 5, 1) // 2 columns each, 1 column left over
+	shape, _ := render(rows)
+	if shape != " ████\n" {
 		t.Errorf("shape %q", shape)
 	}
 }

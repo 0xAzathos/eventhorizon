@@ -445,3 +445,34 @@ func TestFeedsDashboard(t *testing.T) {
 		t.Errorf("top domains %+v, blocklist %d", snap.TopDomains, srv.BlocklistSize())
 	}
 }
+
+// bigAnswer replies with 40 A records: about 700 bytes, more than the 512
+// a UDP client without EDNS accepts.
+func bigAnswer(q []byte) []byte {
+	r := append([]byte(nil), q...)
+	r[2] |= 0x80
+	for range 40 {
+		r[7]++
+		r = append(r, 0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0x01, 0x2C, 0, 4, 1, 2, 3, 4)
+	}
+	return r
+}
+
+func TestOversizedAnswerIsTruncatedForUDP(t *testing.T) {
+	up, _ := fakeUpstreamWith(t, bigAnswer)
+	srv := startServer(t, up)
+
+	resp := exchangeUDP(t, srv, query(30, "big.example", 1))
+	if len(resp) > 512 || resp[2]&0x02 == 0 {
+		t.Fatalf("UDP reply is %d bytes, TC=%v; want a truncated reply", len(resp), resp[2]&0x02 != 0)
+	}
+	if binary.BigEndian.Uint16(resp) != 30 || binary.BigEndian.Uint16(resp[6:]) != 0 {
+		t.Errorf("truncated reply % x", resp[:12])
+	}
+
+	// The retry over TCP gets the whole answer.
+	full := exchangeTCP(t, dialTCP(t, srv), query(31, "big.example", 1))
+	if n := binary.BigEndian.Uint16(full[6:]); n != 40 || full[2]&0x02 != 0 {
+		t.Errorf("TCP reply has %d answers, TC=%v", n, full[2]&0x02 != 0)
+	}
+}

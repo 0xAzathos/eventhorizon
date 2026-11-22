@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -145,12 +146,13 @@ func (m model) chartPanel(w, h int) string {
 		lines = append(lines, sDim.Render(padLeft(label, axisW-1)+" ")+renderCells(row))
 	}
 
-	// The history holds 120 seconds; a wider chart leaves room on the
-	// left, so the axis only labels the span that has data.
-	span := min(chartW, len(m.snap.PerSecond))
+	// Label the span the bars actually cover, using the same layout math
+	// as dash.Bars.
+	shown, colW := dash.Columns(len(m.snap.PerSecond), chartW)
+	used := shown * colW
 	axis := padLeft("now", chartW)
-	if span > 8 {
-		axis = spaces(chartW-span) + padRight(fmt.Sprintf("-%ds", span), span-3) + "now"
+	if used > 8 {
+		axis = spaces(chartW-used) + padRight(fmt.Sprintf("-%ds", shown), used-3) + "now"
 	}
 	lines = append(lines, sDim.Render(spaces(axisW)+axis))
 	return panel(w, h, lines)
@@ -309,7 +311,15 @@ func (m model) footer(w int) string {
 		if !u.Up {
 			dot = fg(cRed).Render("●")
 		}
-		right += dot + sDim.Render(" "+strings.TrimSuffix(u.Addr, ":53")+"  ")
+		host, _, err := net.SplitHostPort(u.Addr)
+		if err != nil {
+			host = u.Addr
+		}
+		label := " " + host
+		if u.Encrypted {
+			label += " tls"
+		}
+		right += dot + sDim.Render(label+"  ")
 	}
 	right += sDim.Render(fmt.Sprintf("blocklist %s · cache %s ",
 		dash.Count(uint64(m.snap.Blocklist)), dash.Count(uint64(m.snap.CacheSize))))

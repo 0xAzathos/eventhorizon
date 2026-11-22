@@ -103,17 +103,31 @@ type Cell struct {
 // eighths draws partial blocks: index i is a block i/8 of a cell high.
 var eighths = []rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
 
-// Bars draws the last width seconds as a stacked bar chart, height rows
-// tall, top row first. Each column is one second; its blocked queries are
-// stacked at the bottom of the bar. Bars scale to the busiest second shown,
-// which is returned as peak. Using eighth blocks gives height*8 levels.
+// Columns decides how a chart of width columns shows a series of
+// seconds: how many of the newest seconds fit, and how many columns each
+// gets. A narrow chart shows one column per second; a wide one gives each
+// second several, so the bars fill the space instead of crowding into a
+// corner.
+func Columns(seconds, width int) (shown, colW int) {
+	if seconds <= 0 || width <= 0 {
+		return 0, 1
+	}
+	if seconds >= width {
+		return width, 1
+	}
+	return seconds, width / seconds
+}
+
+// Bars draws the series as a stacked bar chart, height rows tall, top row
+// first. Each second is one bar; its blocked queries are stacked at the
+// bottom. Bars scale to the busiest second shown, which is returned as
+// peak. Using eighth blocks gives height*8 levels.
 func Bars(series []stats.Second, width, height int) (rows [][]Cell, peak int) {
 	if width <= 0 || height <= 0 {
 		return nil, 0
 	}
-	if len(series) > width {
-		series = series[len(series)-width:]
-	}
+	shown, colW := Columns(len(series), width)
+	series = series[len(series)-shown:]
 	for _, s := range series {
 		peak = max(peak, s.Queries)
 	}
@@ -129,12 +143,17 @@ func Bars(series []stats.Second, width, height int) (rows [][]Cell, peak int) {
 		return rows, 0
 	}
 
+	// Wide bars get a one column gap so neighbours stay apart.
+	barW := colW
+	if colW >= 3 {
+		barW = colW - 1
+	}
 	levels := height * 8
-	offset := width - len(series) // fewer seconds than columns: right align
+	offset := width - shown*colW // right align: the newest second is at the edge
 	for i, s := range series {
 		total := scale(s.Queries, peak, levels)
 		blocked := scale(s.Blocked, peak, levels)
-		col := offset + i
+		start := offset + i*colW
 		for level := 0; level < height; level++ {
 			bottom := level * 8 // eighths below this cell
 			fill := min(max(total-bottom, 0), 8)
@@ -146,7 +165,9 @@ func Bars(series []stats.Second, width, height int) (rows [][]Cell, peak int) {
 			if blocked-bottom >= (fill+1)/2 {
 				kind = Blocked
 			}
-			rows[height-1-level][col] = Cell{eighths[fill], kind}
+			for c := start; c < start+barW; c++ {
+				rows[height-1-level][c] = Cell{eighths[fill], kind}
+			}
 		}
 	}
 	return rows, peak

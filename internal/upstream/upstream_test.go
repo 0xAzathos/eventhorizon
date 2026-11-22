@@ -267,7 +267,7 @@ func TestNewValidates(t *testing.T) {
 	if _, err := New(nil, time.Second); err == nil {
 		t.Error("accepted no servers")
 	}
-	if _, err := New([]string{"1.1.1.1"}, time.Second); err == nil {
-		t.Error("accepted an address without a port")
+	if _, err := New([]string{"dns.google"}, time.Second); err == nil {
+		t.Error("accepted a hostname")
 	}
 }

@@ -47,7 +47,7 @@ func main() {
 	var cfg config
 	var blocklists, queryLog string
 	flag.StringVar(&cfg.listen, "listen", "127.0.0.1:5300", "address to listen on (UDP and TCP)")
-	flag.StringVar(&cfg.upstream, "upstream", "1.1.1.1:53,9.9.9.9:53", "comma separated upstream resolvers, tried in order with failover")
+	flag.StringVar(&cfg.upstream, "upstream", "tls://1.1.1.1#cloudflare-dns.com,tls://9.9.9.9#dns.quad9.net", "comma separated resolvers tried in order: IP[:port] for plain DNS, tls://IP[:port]#name for DNS over TLS")
 	flag.StringVar(&blocklists, "blocklist", "", "comma separated blocklist files or http(s) URLs")
 	flag.StringVar(&cfg.allowlist, "allowlist", "", "allowlist file (plain domains)")
 	flag.StringVar(&cfg.cacheDir, "list-cache-dir", defaultListCacheDir(), "where downloaded lists are kept as fallback")
@@ -120,6 +120,7 @@ func run(log *slog.Logger, cfg config) error {
 	if err != nil {
 		return err
 	}
+	defer pool.Close()
 
 	srv := &server.Server{
 		Cache:    c,

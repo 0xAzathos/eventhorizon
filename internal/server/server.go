@@ -116,6 +116,12 @@ func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
 		} else {
 			s.Cache.Put(q, resp, time.Now())
 			action = "allowed"
+			// Over TCP or TLS the upstream sends the full answer however
+			// big. A UDP client only takes what it advertised; anything
+			// larger becomes "truncated, retry over TCP".
+			if len(resp) > maxSize {
+				resp = dnsmsg.Truncate(resp)
+			}
 		}
 	}
 
