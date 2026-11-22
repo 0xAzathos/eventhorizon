@@ -153,7 +153,7 @@ func (p *Pool) Exchange(proto string, msg []byte, id uint16) (Result, error) {
 		}
 		p.markUp(s)
 
-		if rcode := resp[3] & 0x0F; rcode == dnsmsg.RcodeServFail || rcode == rcodeRefused {
+		if rcode := resp[3] & 0x0F; rcode == dnsmsg.RcodeServFail || rcode == dnsmsg.RcodeRefused {
 			if fallback.Resp == nil {
 				fallback = Result{Resp: resp, Server: s.spec}
 			}
@@ -168,8 +168,6 @@ func (p *Pool) Exchange(proto string, msg []byte, id uint16) (Result, error) {
 	}
 	return res, lastErr
 }
-
-const rcodeRefused = 5
 
 // order returns healthy servers in configured order, then the ones that
 // are down. When everything is down, asking a down server beats failing

@@ -20,6 +20,7 @@ import (
 	"eventhorizon/internal/cache"
 	"eventhorizon/internal/detect"
 	"eventhorizon/internal/events"
+	"eventhorizon/internal/guard"
 	"eventhorizon/internal/lists"
 	"eventhorizon/internal/policy"
 	"eventhorizon/internal/psl"
@@ -41,6 +42,8 @@ type config struct {
 	queryLog    server.QueryLog
 	detect      bool
 	apiAddr     string
+	clients     string
+	rateLimit   float64
 }
 
 func main() {
@@ -58,6 +61,8 @@ func main() {
 	flag.StringVar(&queryLog, "log-queries", "all", "which queries to log: all, blocked (includes suspicious) or none")
 	flag.BoolVar(&cfg.detect, "detect", true, "watch for DGA malware and DNS tunneling")
 	flag.StringVar(&cfg.apiAddr, "api", "127.0.0.1:5380", "local API for the TUI, empty disables it")
+	flag.StringVar(&cfg.clients, "allow-clients", "loopback,private", "who may send queries: CIDRs, addresses, or the groups loopback, private, any")
+	flag.Float64Var(&cfg.rateLimit, "rate-limit", 200, "queries per second per client (bursts up to 5x), 0 disables")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -122,7 +127,21 @@ func run(log *slog.Logger, cfg config) error {
 	}
 	defer pool.Close()
 
+	acl, err := guard.ParseACL(cfg.clients)
+	if err != nil {
+		return err
+	}
+	if acl.Open() {
+		log.Warn("allow-clients includes any: this is an open resolver, only run it behind a firewall")
+	}
+	var limiter *guard.Limiter
+	if cfg.rateLimit > 0 {
+		limiter = guard.NewLimiter(cfg.rateLimit, 5*cfg.rateLimit)
+	}
+
 	srv := &server.Server{
+		ACL:      acl,
+		Limit:    limiter,
 		Cache:    c,
 		Detect:   det,
 		Events:   hub,
@@ -159,7 +178,8 @@ func run(log *slog.Logger, cfg config) error {
 	errs := make(chan error, 3)
 	go func() { errs <- srv.ServeUDP(udpConn) }()
 	go func() { errs <- srv.ServeTCP(tcpLn) }()
-	log.Info("listening", "addr", cfg.listen, "proto", "udp+tcp", "upstream", cfg.upstream)
+	log.Info("listening", "addr", cfg.listen, "proto", "udp+tcp", "upstream", cfg.upstream,
+		"allow_clients", cfg.clients, "rate_limit", cfg.rateLimit)
 
 	if cfg.apiAddr != "" {
 		if !api.IsLoopback(cfg.apiAddr) {

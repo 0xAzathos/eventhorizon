@@ -21,6 +21,7 @@ type Totals struct {
 	ServFail   uint64 `json:"servfail"`
 	Suspicious uint64 `json:"suspicious"`
 	Alerts     uint64 `json:"alerts"`
+	Refused    uint64 `json:"refused"` // turned away by allow list or rate limit
 }
 
 type Second struct {
@@ -99,6 +100,16 @@ func (s *Stats) Record(now time.Time, action, client, name, registrable string, 
 	if registrable != "" {
 		s.domains.Add(registrable)
 	}
+}
+
+// RecordRefused counts a query turned away before it was answered.
+func (s *Stats) RecordRefused() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.totals.Refused++
+	s.mu.Unlock()
 }
 
 func (s *Stats) RecordAlert() {

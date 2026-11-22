@@ -16,6 +16,7 @@ import (
 	"eventhorizon/internal/detect"
 	"eventhorizon/internal/dnsmsg"
 	"eventhorizon/internal/events"
+	"eventhorizon/internal/guard"
 	"eventhorizon/internal/policy"
 	"eventhorizon/internal/psl"
 	"eventhorizon/internal/stats"
@@ -573,5 +574,105 @@ func TestCNAMEUnrelatedTargetPassesThrough(t *testing.T) {
 	resp := exchangeUDP(t, addr, query(44, "metrics.shop.example", 1))
 	if isBlockedA(resp) || !bytes.Equal(resp[len(resp)-4:], []byte{9, 9, 9, 9}) {
 		t.Errorf("unrelated CNAME changed the answer: % x", resp)
+	}
+}
+
+// tryUDP sends one query and reports whether any reply came back.
+func tryUDP(t *testing.T, server string, msg []byte) ([]byte, bool) {
+	t.Helper()
+	c, err := net.Dial("udp", server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(300 * time.Millisecond))
+	c.Write(msg)
+	buf := make([]byte, 1500)
+	n, err := c.Read(buf)
+	if err != nil {
+		return nil, false
+	}
+	return buf[:n], true
+}
+
+func guardedServer(t *testing.T, acl *guard.ACL, lim *guard.Limiter) (string, *stats.Stats, *syncBuffer) {
+	t.Helper()
+	up, _ := fakeUpstream(t)
+	st := stats.New(time.Now())
+	logs := new(syncBuffer)
+	srv := &Server{
+		ACL:      acl,
+		Limit:    lim,
+		Stats:    st,
+		Upstream: newPool(t, up),
+		Log:      slog.New(slog.NewTextHandler(logs, nil)),
+		QueryLog: LogNone,
+	}
+	srv.SetPolicy(&policy.Policy{Block: policy.NewSet()})
+	pc, ln := listenBoth(t)
+	go srv.ServeUDP(pc)
+	go srv.ServeTCP(ln)
+	return pc.LocalAddr().String(), st, logs
+}
+
+func TestStrangersGetSilenceOverUDP(t *testing.T) {
+	acl, _ := guard.ParseACL("10.0.0.0/8") // the test client, 127.0.0.1, is not in it
+	addr, st, logs := guardedServer(t, acl, nil)
+
+	for i := range 3 {
+		if resp, ok := tryUDP(t, addr, query(uint16(50+i), "good.example", 1)); ok {
+			t.Fatalf("stranger got a reply: % x", resp)
+		}
+	}
+	if n := st.Snapshot(time.Now(), 1).Totals.Refused; n != 3 {
+		t.Errorf("refused = %d, want 3", n)
+	}
+	if n := strings.Count(logs.String(), "client turned away"); n != 1 {
+		t.Errorf("logged %d times, want once per client", n)
+	}
+}
+
+func TestStrangersAreDisconnectedOverTCP(t *testing.T) {
+	acl, _ := guard.ParseACL("10.0.0.0/8")
+	addr, _, _ := guardedServer(t, acl, nil)
+
+	c := dialTCP(t, addr)
+	dnsmsg.WriteFramed(c, query(60, "good.example", 1))
+	if _, err := dnsmsg.ReadFramed(c); err == nil {
+		t.Error("stranger got an answer over TCP")
+	}
+}
+
+func TestAllowedClientsAreServed(t *testing.T) {
+	acl, _ := guard.ParseACL("loopback,private")
+	addr, st, _ := guardedServer(t, acl, nil)
+	if _, ok := tryUDP(t, addr, query(61, "good.example", 1)); !ok {
+		t.Fatal("allowed client got no reply")
+	}
+	if st.Snapshot(time.Now(), 1).Totals.Refused != 0 {
+		t.Error("allowed client counted as refused")
+	}
+}
+
+func TestRateLimit(t *testing.T) {
+	addr, st, _ := guardedServer(t, nil, guard.NewLimiter(0.1, 3)) // bursts of 3, slow refill
+
+	answered := 0
+	for i := range 5 {
+		if _, ok := tryUDP(t, addr, query(uint16(70+i), "good.example", 1)); ok {
+			answered++
+		}
+	}
+	if answered != 3 {
+		t.Errorf("UDP: %d of 5 answered, want 3", answered)
+	}
+
+	// Over TCP the limited client hears REFUSED instead of silence.
+	resp := exchangeTCP(t, dialTCP(t, addr), query(80, "good.example", 1))
+	if rcode := resp[3] & 0x0F; rcode != dnsmsg.RcodeRefused {
+		t.Errorf("TCP rcode = %d, want REFUSED", rcode)
+	}
+	if n := st.Snapshot(time.Now(), 1).Totals.Refused; n != 3 {
+		t.Errorf("refused = %d, want 3", n)
 	}
 }

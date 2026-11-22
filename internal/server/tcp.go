@@ -23,6 +23,10 @@ func (s *Server) ServeTCP(ln net.Listener) error {
 			}
 			return err
 		}
+		if !s.allowedClient(clientAddr(conn.RemoteAddr())) {
+			conn.Close()
+			continue
+		}
 		go s.serveConn(conn)
 	}
 }
@@ -43,7 +47,13 @@ func (s *Server) serveConn(conn net.Conn) {
 			}
 			return
 		}
-		resp := s.respond(msg, conn.RemoteAddr(), "tcp")
+		var resp []byte
+		if s.withinRate(clientAddr(conn.RemoteAddr())) {
+			resp = s.respond(msg, conn.RemoteAddr(), "tcp")
+		} else {
+			// Over TCP the address is real, so saying no is safe.
+			resp = dnsmsg.ErrorResponse(msg, dnsmsg.RcodeRefused)
+		}
 		if resp == nil {
 			return
 		}

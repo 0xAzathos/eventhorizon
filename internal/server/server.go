@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"eventhorizon/internal/detect"
 	"eventhorizon/internal/dnsmsg"
 	"eventhorizon/internal/events"
+	"eventhorizon/internal/guard"
 	"eventhorizon/internal/policy"
 	"eventhorizon/internal/psl"
 	"eventhorizon/internal/stats"
@@ -50,6 +52,8 @@ type Server struct {
 	Events   *events.Hub      // nil: no live viewers
 	Stats    *stats.Stats     // nil: no dashboard statistics
 	Upstream *upstream.Pool   // resolvers with failover, UDP and TCP
+	ACL      *guard.ACL       // nil: every client may ask
+	Limit    *guard.Limiter   // nil: no rate limit
 	Log      *slog.Logger
 	QueryLog QueryLog
 
@@ -57,6 +61,9 @@ type Server struct {
 	// running at that moment finish with the old one; the next query sees
 	// the new one. No locks, and no query ever sees a half built policy.
 	policy atomic.Pointer[policy.Policy]
+
+	reportsOnce sync.Once
+	reports     *guard.Reporter
 }
 
 // SetPolicy installs p for all queries from now on.

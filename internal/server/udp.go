@@ -17,6 +17,10 @@ func (s *Server) ServeUDP(conn net.PacketConn) error {
 			}
 			return err
 		}
+		// Strangers and clients over their rate get silence (see guard.go).
+		if ip := clientAddr(addr); !s.allowedClient(ip) || !s.withinRate(ip) {
+			continue
+		}
 		// buf is reused by the next read, so hand the goroutine a copy.
 		msg := append([]byte(nil), buf[:n]...)
 		go func() {

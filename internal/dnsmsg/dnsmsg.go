@@ -44,6 +44,7 @@ const (
 	RcodeFormErr  = 1
 	RcodeServFail = 2
 	RcodeNXDomain = 3
+	RcodeRefused  = 5
 )
 
 // Bits inside the 16 bit flags field.
