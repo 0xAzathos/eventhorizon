@@ -17,8 +17,10 @@ import (
 	"time"
 
 	"eventhorizon/internal/cache"
+	"eventhorizon/internal/detect"
 	"eventhorizon/internal/lists"
 	"eventhorizon/internal/policy"
+	"eventhorizon/internal/psl"
 	"eventhorizon/internal/server"
 )
 
@@ -33,6 +35,7 @@ type config struct {
 	cacheSize   int
 	cacheMaxTTL time.Duration
 	queryLog    server.QueryLog
+	detect      bool
 }
 
 func main() {
@@ -47,7 +50,8 @@ func main() {
 	flag.DurationVar(&cfg.timeout, "timeout", 2*time.Second, "upstream query timeout")
 	flag.IntVar(&cfg.cacheSize, "cache-size", 10000, "max cached replies, 0 disables the cache")
 	flag.DurationVar(&cfg.cacheMaxTTL, "cache-max-ttl", time.Hour, "never cache a reply longer than this")
-	flag.StringVar(&queryLog, "log-queries", "all", "which queries to log: all, blocked or none")
+	flag.StringVar(&queryLog, "log-queries", "all", "which queries to log: all, blocked (includes suspicious) or none")
+	flag.BoolVar(&cfg.detect, "detect", true, "watch for DGA malware and DNS tunneling")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -83,8 +87,23 @@ func run(log *slog.Logger, cfg config) error {
 	if cfg.cacheSize > 0 {
 		c = cache.New(cfg.cacheSize, cfg.cacheMaxTTL)
 	}
+	var det *detect.Detector
+	if cfg.detect {
+		model, err := detect.DefaultModel()
+		if err != nil {
+			return err
+		}
+		popular, err := detect.DefaultPopular()
+		if err != nil {
+			return err
+		}
+		det = detect.New(detect.DefaultConfig(), model, popular, psl.Default)
+		log.Info("threat detection on", "popular_domains_skipped", len(popular))
+	}
+
 	srv := &server.Server{
 		Cache:    c,
+		Detect:   det,
 		Upstream: cfg.upstream,
 		Timeout:  cfg.timeout,
 		Log:      log,

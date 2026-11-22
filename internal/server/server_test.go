@@ -1,5 +1,5 @@
 package server
- 
+
 import (
 	"bytes"
 	"encoding/binary"
@@ -8,14 +8,17 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
- 
+
 	"eventhorizon/internal/cache"
+	"eventhorizon/internal/detect"
 	"eventhorizon/internal/policy"
+	"eventhorizon/internal/psl"
 )
- 
+
 func query(id uint16, name string, qtype uint16) []byte {
 	b := binary.BigEndian.AppendUint16(nil, id)
 	b = append(b, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0) // RD, qdcount 1
@@ -27,7 +30,7 @@ func query(id uint16, name string, qtype uint16) []byte {
 	b = binary.BigEndian.AppendUint16(b, qtype)
 	return binary.BigEndian.AppendUint16(b, 1)
 }
- 
+
 // listenBoth opens UDP and TCP on the same port, like a real DNS server.
 func listenBoth(t *testing.T) (net.PacketConn, net.Listener) {
 	t.Helper()
@@ -47,10 +50,10 @@ func listenBoth(t *testing.T) (net.PacketConn, net.Listener) {
 	t.Fatal("no free port for both UDP and TCP")
 	return nil, nil
 }
- 
+
 // upstreamHits counts queries per transport.
 type upstreamHits struct{ udp, tcp atomic.Int32 }
- 
+
 // fakeAnswer turns a query into a reply: QR set, plus one A record
 // (1.2.3.4, TTL 300) pointing back at the question name.
 func fakeAnswer(q []byte) []byte {
@@ -60,13 +63,27 @@ func fakeAnswer(q []byte) []byte {
 	r = append(r, 0xC0, 0x0C, 0, 1, 0, 1, 0, 0, 0x01, 0x2C, 0, 4, 1, 2, 3, 4)
 	return r
 }
- 
+
+// nxAnswer turns a query into an NXDOMAIN reply.
+func nxAnswer(q []byte) []byte {
+	r := append([]byte(nil), q...)
+	r[2] |= 0x80
+	r[3] = 0x80 | 3
+	return r
+}
+
 // fakeUpstream answers every query with fakeAnswer.
 func fakeUpstream(t *testing.T) (string, *upstreamHits) {
 	t.Helper()
+	return fakeUpstreamWith(t, fakeAnswer)
+}
+
+// fakeUpstreamWith answers every query with answer(query), on UDP and TCP.
+func fakeUpstreamWith(t *testing.T, answer func([]byte) []byte) (string, *upstreamHits) {
+	t.Helper()
 	pc, ln := listenBoth(t)
 	hits := new(upstreamHits)
- 
+
 	go func() {
 		buf := make([]byte, 1500)
 		for {
@@ -75,7 +92,7 @@ func fakeUpstream(t *testing.T) (string, *upstreamHits) {
 				return
 			}
 			hits.udp.Add(1)
-			pc.WriteTo(fakeAnswer(buf[:n]), from)
+			pc.WriteTo(answer(buf[:n]), from)
 		}
 	}()
 	go func() {
@@ -92,24 +109,24 @@ func fakeUpstream(t *testing.T) (string, *upstreamHits) {
 						return
 					}
 					hits.tcp.Add(1)
-					writeFramed(c, fakeAnswer(msg))
+					writeFramed(c, answer(msg))
 				}
 			}()
 		}
 	}()
 	return pc.LocalAddr().String(), hits
 }
- 
+
 func startServer(t *testing.T, upstream string) string {
 	t.Helper()
 	return startServerWithCache(t, upstream, nil)
 }
- 
+
 func startServerWithCache(t *testing.T, upstream string, c *cache.Cache) string {
 	t.Helper()
 	block := policy.NewSet()
 	block.Add("ads.example")
- 
+
 	srv := &Server{
 		Cache:    c,
 		Upstream: upstream,
@@ -122,7 +139,7 @@ func startServerWithCache(t *testing.T, upstream string, c *cache.Cache) string 
 	go srv.ServeTCP(ln)
 	return pc.LocalAddr().String()
 }
- 
+
 func exchangeUDP(t *testing.T, server string, msg []byte) []byte {
 	t.Helper()
 	c, err := net.Dial("udp", server)
@@ -141,7 +158,7 @@ func exchangeUDP(t *testing.T, server string, msg []byte) []byte {
 	}
 	return buf[:n]
 }
- 
+
 func dialTCP(t *testing.T, server string) net.Conn {
 	t.Helper()
 	c, err := net.Dial("tcp", server)
@@ -152,7 +169,7 @@ func dialTCP(t *testing.T, server string) net.Conn {
 	c.SetDeadline(time.Now().Add(2 * time.Second))
 	return c
 }
- 
+
 func exchangeTCP(t *testing.T, c net.Conn, msg []byte) []byte {
 	t.Helper()
 	if err := writeFramed(c, msg); err != nil {
@@ -164,16 +181,16 @@ func exchangeTCP(t *testing.T, c net.Conn, msg []byte) []byte {
 	}
 	return resp
 }
- 
+
 func isBlockedA(resp []byte) bool {
 	return binary.BigEndian.Uint16(resp[6:]) == 1 &&
 		bytes.Equal(resp[len(resp)-4:], []byte{0, 0, 0, 0})
 }
- 
+
 func TestUDPBlockedNeverReachesUpstream(t *testing.T) {
 	up, hits := fakeUpstream(t)
 	srv := startServer(t, up)
- 
+
 	resp := exchangeUDP(t, srv, query(7, "x.ads.example", 1))
 	if binary.BigEndian.Uint16(resp) != 7 || !isBlockedA(resp) {
 		t.Errorf("not a blocked answer: % x", resp)
@@ -182,11 +199,11 @@ func TestUDPBlockedNeverReachesUpstream(t *testing.T) {
 		t.Error("blocked query was forwarded")
 	}
 }
- 
+
 func TestUDPAllowedIsForwarded(t *testing.T) {
 	up, hits := fakeUpstream(t)
 	srv := startServer(t, up)
- 
+
 	q := query(8, "good.example", 1)
 	resp := exchangeUDP(t, srv, q)
 	if hits.udp.Load() != 1 || hits.tcp.Load() != 0 {
@@ -196,11 +213,11 @@ func TestUDPAllowedIsForwarded(t *testing.T) {
 		t.Errorf("relayed reply differs:\n% x\n% x", resp, want)
 	}
 }
- 
+
 func TestTCPForwardsOverTCP(t *testing.T) {
 	up, hits := fakeUpstream(t)
 	srv := startServer(t, up)
- 
+
 	resp := exchangeTCP(t, dialTCP(t, srv), query(11, "good.example", 1))
 	if hits.tcp.Load() != 1 || hits.udp.Load() != 0 {
 		t.Fatalf("upstream udp=%d tcp=%d, want tcp only", hits.udp.Load(), hits.tcp.Load())
@@ -209,12 +226,12 @@ func TestTCPForwardsOverTCP(t *testing.T) {
 		t.Errorf("bad reply: % x", resp)
 	}
 }
- 
+
 func TestTCPPipelinedQueries(t *testing.T) {
 	up, _ := fakeUpstream(t)
 	srv := startServer(t, up)
 	c := dialTCP(t, srv)
- 
+
 	// Several queries on one connection, mixing blocked and allowed.
 	if resp := exchangeTCP(t, c, query(1, "ads.example", 1)); !isBlockedA(resp) {
 		t.Error("first query not blocked")
@@ -226,14 +243,14 @@ func TestTCPPipelinedQueries(t *testing.T) {
 		t.Error("third query not blocked")
 	}
 }
- 
+
 func TestUpstreamDownGivesServFail(t *testing.T) {
 	// Grab a free port, then close it so nothing answers there.
 	pc, ln := listenBoth(t)
 	dead := pc.LocalAddr().String()
 	pc.Close()
 	ln.Close()
- 
+
 	srv := startServer(t, dead)
 	for _, resp := range [][]byte{
 		exchangeUDP(t, srv, query(9, "good.example", 1)),
@@ -244,18 +261,18 @@ func TestUpstreamDownGivesServFail(t *testing.T) {
 		}
 	}
 }
- 
+
 func TestMalformedGivesFormErr(t *testing.T) {
 	up, _ := fakeUpstream(t)
 	srv := startServer(t, up)
- 
+
 	bad := query(10, "good.example", 1)
 	bad[5] = 2 // claim two questions
 	if rcode := exchangeUDP(t, srv, bad)[3] & 0x0F; rcode != 1 {
 		t.Errorf("rcode = %d, want FORMERR", rcode)
 	}
 }
- 
+
 func TestFraming(t *testing.T) {
 	var buf bytes.Buffer
 	writeFramed(&buf, []byte("hello"))
@@ -266,7 +283,7 @@ func TestFraming(t *testing.T) {
 	if err != nil || string(got) != "hello" {
 		t.Errorf("read back %q, %v", got, err)
 	}
- 
+
 	if _, err := readFramed(bytes.NewReader([]byte{0, 0})); !errors.Is(err, errEmptyMessage) {
 		t.Errorf("zero length: err = %v", err)
 	}
@@ -274,15 +291,15 @@ func TestFraming(t *testing.T) {
 		t.Errorf("short body: err = %v", err)
 	}
 }
- 
+
 func TestCacheAnswersRepeats(t *testing.T) {
 	up, hits := fakeUpstream(t)
 	srv := startServerWithCache(t, up, cache.New(100, time.Hour))
- 
+
 	first := exchangeUDP(t, srv, query(20, "good.example", 1))
 	second := exchangeUDP(t, srv, query(21, "good.example", 1))
 	viaTCP := exchangeTCP(t, dialTCP(t, srv), query(22, "good.example", 1))
- 
+
 	if n := hits.udp.Load() + hits.tcp.Load(); n != 1 {
 		t.Fatalf("upstream hits = %d, want 1", n)
 	}
@@ -295,7 +312,7 @@ func TestCacheAnswersRepeats(t *testing.T) {
 		}
 	}
 }
- 
+
 func TestPolicySwap(t *testing.T) {
 	up, _ := fakeUpstream(t)
 	block := policy.NewSet()
@@ -309,7 +326,7 @@ func TestPolicySwap(t *testing.T) {
 	go srv.ServeUDP(pc)
 	go srv.ServeTCP(ln)
 	addr := pc.LocalAddr().String()
- 
+
 	if isBlockedA(exchangeUDP(t, addr, query(1, "new.example", 1))) {
 		t.Fatal("blocked before the swap")
 	}
@@ -320,7 +337,7 @@ func TestPolicySwap(t *testing.T) {
 		t.Error("not blocked after the swap")
 	}
 }
- 
+
 func TestParseQueryLog(t *testing.T) {
 	for in, want := range map[string]QueryLog{"all": LogAll, "blocked": LogBlocked, "none": LogNone} {
 		if got, err := ParseQueryLog(in); err != nil || got != want {
@@ -331,4 +348,60 @@ func TestParseQueryLog(t *testing.T) {
 		t.Error("accepted an unknown mode")
 	}
 }
- 
+
+// syncBuffer lets the server goroutines and the test share a log buffer.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestDGABurstRaisesAlert(t *testing.T) {
+	up, _ := fakeUpstreamWith(t, nxAnswer)
+	model, err := detect.DefaultModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := new(syncBuffer)
+	srv := &Server{
+		Detect:   detect.New(detect.DefaultConfig(), model, nil, psl.Default),
+		Upstream: up,
+		Timeout:  300 * time.Millisecond,
+		Log:      slog.New(slog.NewTextHandler(logs, nil)),
+		QueryLog: LogBlocked,
+	}
+	srv.SetPolicy(&policy.Policy{Block: policy.NewSet()})
+	pc, ln := listenBoth(t)
+	go srv.ServeUDP(pc)
+	go srv.ServeTCP(ln)
+	addr := pc.LocalAddr().String()
+
+	// A normal name that does not exist: logged nowhere, no alert.
+	exchangeUDP(t, addr, query(1, "typo.example", 1))
+
+	for i, l := range []string{"xkq7v9zpl3wn", "qwzxjkvbnmpl", "zzkqxvbjwpfm", "pqxzvkjwbmtl", "jvqxzkwpbmfr"} {
+		exchangeUDP(t, addr, query(uint16(10+i), l+".com", 1))
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, `msg="threat detected" kind=dga client=127.0.0.1`) {
+		t.Errorf("no DGA alert in log:\n%s", out)
+	}
+	if strings.Contains(out, "typo.example") {
+		t.Error("an ordinary query was logged in blocked mode")
+	}
+	if n := strings.Count(out, "suspicious=dga"); n != 5 {
+		t.Errorf("%d suspicious query lines, want 5", n)
+	}
+}

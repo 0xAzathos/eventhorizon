@@ -4,28 +4,30 @@
 // The core (respond, forward) does not care about the transport. udp.go and
 // tcp.go only move bytes in and out.
 package server
- 
+
 import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strings"
 	"sync/atomic"
 	"time"
- 
+
 	"eventhorizon/internal/cache"
+	"eventhorizon/internal/detect"
 	"eventhorizon/internal/dnsmsg"
 	"eventhorizon/internal/policy"
 )
- 
+
 // QueryLog chooses which queries get a log line.
 type QueryLog int
- 
+
 const (
-	LogAll QueryLog = iota
-	LogBlocked
+	LogAll     QueryLog = iota
+	LogBlocked          // blocked and suspicious queries only
 	LogNone
 )
- 
+
 func ParseQueryLog(s string) (QueryLog, error) {
 	switch s {
 	case "all":
@@ -37,46 +39,51 @@ func ParseQueryLog(s string) (QueryLog, error) {
 	}
 	return 0, fmt.Errorf("unknown query log mode %q (want all, blocked or none)", s)
 }
- 
+
 type Server struct {
-	Cache    *cache.Cache  // nil disables caching
-	Upstream string        // "1.1.1.1:53", used for both UDP and TCP
-	Timeout  time.Duration // per upstream query
+	Cache    *cache.Cache     // nil disables caching
+	Detect   *detect.Detector // nil disables threat detection
+	Upstream string           // "1.1.1.1:53", used for both UDP and TCP
+	Timeout  time.Duration    // per upstream query
 	Log      *slog.Logger
 	QueryLog QueryLog
- 
+
 	// The policy is swapped as a whole when lists are reloaded. Queries
 	// running at that moment finish with the old one; the next query sees
 	// the new one. No locks, and no query ever sees a half built policy.
 	policy atomic.Pointer[policy.Policy]
 }
- 
+
 // SetPolicy installs p for all queries from now on.
 func (s *Server) SetPolicy(p *policy.Policy) {
 	s.policy.Store(p)
 }
- 
+
 // respond turns one query into one reply. proto is "udp" or "tcp" and is
 // also the transport used upstream: a client that retried over TCP because
 // of truncation needs a TCP answer from upstream too. Returns nil when no
 // reply should be sent.
 func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
 	start := time.Now()
- 
+
 	q, err := dnsmsg.Parse(msg)
 	if err != nil {
 		s.Log.Warn("bad query", "proto", proto, "client", client.String(), "err", err)
 		return dnsmsg.ErrorResponse(msg, dnsmsg.RcodeFormErr)
 	}
- 
+
 	decision := s.policy.Load().Decide(q.Name)
- 
+	var sig detect.Signals
+	if !decision.Blocked {
+		sig = s.Detect.Inspect(q.Name)
+	}
+
 	// Over UDP the reply must fit the client's buffer; TCP has no such limit.
 	maxSize := 65535
 	if proto == "udp" {
 		maxSize = q.UDPSize
 	}
- 
+
 	var resp []byte
 	var action string
 	if decision.Blocked {
@@ -93,15 +100,30 @@ func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
 			action = "allowed"
 		}
 	}
- 
-	if s.QueryLog == LogAll || (s.QueryLog == LogBlocked && decision.Blocked) {
-		s.logQuery(proto, client, q, action, decision.Rule, start)
+
+	// Detection needs the outcome: a random looking name that does not
+	// exist (NXDOMAIN) is what DGA malware produces.
+	if sig.Any() && (action == "allowed" || action == "cached") && len(resp) >= 4 {
+		rcode := int(resp[3] & 0x0F)
+		for _, a := range s.Detect.Observe(clientIP(client), q.Name, sig, rcode) {
+			s.Log.Warn("threat detected",
+				"kind", a.Kind,
+				"client", a.Client,
+				"domain", a.Domain,
+				"count", a.Count,
+				"examples", strings.Join(a.Examples, ","),
+			)
+		}
+	}
+
+	if s.QueryLog == LogAll || (s.QueryLog == LogBlocked && (decision.Blocked || sig.Any())) {
+		s.logQuery(proto, client, q, action, decision.Rule, sig, start)
 	}
 	return resp
 }
- 
-func (s *Server) logQuery(proto string, client net.Addr, q *dnsmsg.Query, action, rule string, start time.Time) {
-	s.Log.Info("query",
+
+func (s *Server) logQuery(proto string, client net.Addr, q *dnsmsg.Query, action, rule string, sig detect.Signals, start time.Time) {
+	attrs := []any{
 		"proto", proto,
 		"client", client.String(),
 		"name", q.Name,
@@ -109,9 +131,23 @@ func (s *Server) logQuery(proto string, client net.Addr, q *dnsmsg.Query, action
 		"action", action,
 		"rule", rule,
 		"took", time.Since(start).Round(time.Microsecond),
-	)
+	}
+	if label := sig.Label(); label != "" {
+		attrs = append(attrs, "suspicious", label)
+	}
+	s.Log.Info("query", attrs...)
 }
- 
+
+// clientIP drops the port: detection counts per device, and a device
+// uses a new source port for almost every query.
+func clientIP(a net.Addr) string {
+	host, _, err := net.SplitHostPort(a.String())
+	if err != nil {
+		return a.String()
+	}
+	return host
+}
+
 // forward sends the original bytes upstream untouched (so EDNS options and
 // everything else survive) and returns the reply whose ID matches.
 func (s *Server) forward(proto string, msg []byte, id uint16) ([]byte, error) {
@@ -120,11 +156,11 @@ func (s *Server) forward(proto string, msg []byte, id uint16) ([]byte, error) {
 		return nil, err
 	}
 	defer c.Close()
- 
+
 	if err := c.SetDeadline(time.Now().Add(s.Timeout)); err != nil {
 		return nil, err
 	}
- 
+
 	if proto == "tcp" {
 		if err := writeFramed(c, msg); err != nil {
 			return nil, err
@@ -138,7 +174,7 @@ func (s *Server) forward(proto string, msg []byte, id uint16) ([]byte, error) {
 		}
 		return resp, nil
 	}
- 
+
 	if _, err := c.Write(msg); err != nil {
 		return nil, err
 	}
@@ -154,4 +190,3 @@ func (s *Server) forward(proto string, msg []byte, id uint16) ([]byte, error) {
 		}
 	}
 }
- 
