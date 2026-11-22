@@ -15,8 +15,10 @@ import (
 
 	"eventhorizon/internal/cache"
 	"eventhorizon/internal/detect"
+	"eventhorizon/internal/events"
 	"eventhorizon/internal/policy"
 	"eventhorizon/internal/psl"
+	"eventhorizon/internal/stats"
 )
 
 func query(id uint16, name string, qtype uint16) []byte {
@@ -403,5 +405,55 @@ func TestDGABurstRaisesAlert(t *testing.T) {
 	}
 	if n := strings.Count(out, "suspicious=dga"); n != 5 {
 		t.Errorf("%d suspicious query lines, want 5", n)
+	}
+}
+
+func TestFeedsDashboard(t *testing.T) {
+	up, _ := fakeUpstream(t)
+	hub := events.NewHub()
+	st := stats.New(time.Now())
+	feed, cancel := hub.Subscribe()
+	defer cancel()
+
+	block := policy.NewSet()
+	block.Add("ads.example")
+	srv := &Server{
+		Events:   hub,
+		Stats:    st,
+		Upstream: up,
+		Timeout:  300 * time.Millisecond,
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	srv.SetPolicy(&policy.Policy{Block: block})
+	pc, ln := listenBoth(t)
+	go srv.ServeUDP(pc)
+	go srv.ServeTCP(ln)
+	addr := pc.LocalAddr().String()
+
+	exchangeUDP(t, addr, query(1, "x.ads.example", 1))
+	exchangeUDP(t, addr, query(2, "www.good.example", 1))
+
+	var got []events.Event
+	for len(got) < 2 {
+		select {
+		case e := <-feed:
+			got = append(got, e)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d events published", len(got))
+		}
+	}
+	if got[0].Name != "x.ads.example" || got[0].Action != "blocked" || got[0].Client != "127.0.0.1" {
+		t.Errorf("first event %+v", got[0])
+	}
+	if got[1].Action != "allowed" || got[1].Type != "A" || got[1].Proto != "udp" {
+		t.Errorf("second event %+v", got[1])
+	}
+
+	snap := st.Snapshot(time.Now(), 5)
+	if snap.Totals.Queries != 2 || snap.Totals.Blocked != 1 {
+		t.Errorf("totals %+v", snap.Totals)
+	}
+	if len(snap.TopDomains) != 2 || srv.BlocklistSize() != 1 {
+		t.Errorf("top domains %+v, blocklist %d", snap.TopDomains, srv.BlocklistSize())
 	}
 }

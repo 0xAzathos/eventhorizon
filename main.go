@@ -16,12 +16,15 @@ import (
 	"syscall"
 	"time"
 
+	"eventhorizon/internal/api"
 	"eventhorizon/internal/cache"
 	"eventhorizon/internal/detect"
+	"eventhorizon/internal/events"
 	"eventhorizon/internal/lists"
 	"eventhorizon/internal/policy"
 	"eventhorizon/internal/psl"
 	"eventhorizon/internal/server"
+	"eventhorizon/internal/stats"
 )
 
 type config struct {
@@ -36,6 +39,7 @@ type config struct {
 	cacheMaxTTL time.Duration
 	queryLog    server.QueryLog
 	detect      bool
+	apiAddr     string
 }
 
 func main() {
@@ -52,6 +56,7 @@ func main() {
 	flag.DurationVar(&cfg.cacheMaxTTL, "cache-max-ttl", time.Hour, "never cache a reply longer than this")
 	flag.StringVar(&queryLog, "log-queries", "all", "which queries to log: all, blocked (includes suspicious) or none")
 	flag.BoolVar(&cfg.detect, "detect", true, "watch for DGA malware and DNS tunneling")
+	flag.StringVar(&cfg.apiAddr, "api", "127.0.0.1:5380", "local API for the TUI, empty disables it")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -101,9 +106,14 @@ func run(log *slog.Logger, cfg config) error {
 		log.Info("threat detection on", "popular_domains_skipped", len(popular))
 	}
 
+	hub := events.NewHub()
+	st := stats.New(time.Now())
+
 	srv := &server.Server{
 		Cache:    c,
 		Detect:   det,
+		Events:   hub,
+		Stats:    st,
 		Upstream: cfg.upstream,
 		Timeout:  cfg.timeout,
 		Log:      log,
@@ -134,10 +144,33 @@ func run(log *slog.Logger, cfg config) error {
 	}
 	defer tcpLn.Close()
 
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
 	go func() { errs <- srv.ServeUDP(udpConn) }()
 	go func() { errs <- srv.ServeTCP(tcpLn) }()
 	log.Info("listening", "addr", cfg.listen, "proto", "udp+tcp", "upstream", cfg.upstream)
+
+	if cfg.apiAddr != "" {
+		if !api.IsLoopback(cfg.apiAddr) {
+			log.Warn("API is reachable from the network and shows every query", "addr", cfg.apiAddr)
+		}
+		handler, err := api.New(cfg.apiAddr, st, hub)
+		if err != nil {
+			return err
+		}
+		handler.Sizes = func() (int, int) { return srv.BlocklistSize(), c.Len() }
+		apiLn, err := net.Listen("tcp", cfg.apiAddr)
+		if err != nil {
+			return err
+		}
+		apiSrv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+		defer apiSrv.Close()
+		go func() {
+			if err := apiSrv.Serve(apiLn); !errors.Is(err, http.ErrServerClosed) {
+				errs <- err
+			}
+		}()
+		log.Info("api listening", "addr", cfg.apiAddr)
+	}
 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)

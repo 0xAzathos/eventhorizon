@@ -16,7 +16,10 @@ import (
 	"eventhorizon/internal/cache"
 	"eventhorizon/internal/detect"
 	"eventhorizon/internal/dnsmsg"
+	"eventhorizon/internal/events"
 	"eventhorizon/internal/policy"
+	"eventhorizon/internal/psl"
+	"eventhorizon/internal/stats"
 )
 
 // QueryLog chooses which queries get a log line.
@@ -43,6 +46,8 @@ func ParseQueryLog(s string) (QueryLog, error) {
 type Server struct {
 	Cache    *cache.Cache     // nil disables caching
 	Detect   *detect.Detector // nil disables threat detection
+	Events   *events.Hub      // nil: no live viewers
+	Stats    *stats.Stats     // nil: no dashboard statistics
 	Upstream string           // "1.1.1.1:53", used for both UDP and TCP
 	Timeout  time.Duration    // per upstream query
 	Log      *slog.Logger
@@ -57,6 +62,14 @@ type Server struct {
 // SetPolicy installs p for all queries from now on.
 func (s *Server) SetPolicy(p *policy.Policy) {
 	s.policy.Store(p)
+}
+
+// BlocklistSize reports how many domains the active policy blocks.
+func (s *Server) BlocklistSize() int {
+	if p := s.policy.Load(); p != nil {
+		return p.Block.Len()
+	}
+	return 0
 }
 
 // respond turns one query into one reply. proto is "udp" or "tcp" and is
@@ -106,15 +119,22 @@ func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
 	if sig.Any() && (action == "allowed" || action == "cached") && len(resp) >= 4 {
 		rcode := int(resp[3] & 0x0F)
 		for _, a := range s.Detect.Observe(clientIP(client), q.Name, sig, rcode) {
-			s.Log.Warn("threat detected",
-				"kind", a.Kind,
-				"client", a.Client,
-				"domain", a.Domain,
-				"count", a.Count,
-				"examples", strings.Join(a.Examples, ","),
-			)
+			attrs := []any{"kind", a.Kind, "client", a.Client}
+			if a.Domain != "" {
+				attrs = append(attrs, "domain", a.Domain)
+			}
+			attrs = append(attrs, "count", a.Count, "examples", strings.Join(a.Examples, ","))
+			s.Log.Warn("threat detected", attrs...)
+
+			s.Stats.RecordAlert()
+			s.Events.Publish(events.Event{
+				Time: time.Now(), Kind: "alert", Alert: a.Kind, Client: a.Client,
+				Domain: a.Domain, Count: a.Count, Examples: a.Examples,
+			})
 		}
 	}
+
+	s.record(proto, client, q, action, decision.Rule, sig, start)
 
 	if s.QueryLog == LogAll || (s.QueryLog == LogBlocked && (decision.Blocked || sig.Any())) {
 		s.logQuery(proto, client, q, action, decision.Rule, sig, start)
@@ -136,6 +156,27 @@ func (s *Server) logQuery(proto string, client net.Addr, q *dnsmsg.Query, action
 		attrs = append(attrs, "suspicious", label)
 	}
 	s.Log.Info("query", attrs...)
+}
+
+// record feeds the dashboard: totals and top lists, plus the live stream.
+func (s *Server) record(proto string, client net.Addr, q *dnsmsg.Query, action, rule string, sig detect.Signals, start time.Time) {
+	if s.Stats == nil && s.Events == nil {
+		return
+	}
+	now := time.Now()
+	ip := clientIP(client)
+
+	registrable := sig.Registrable
+	if registrable == "" && s.Stats != nil {
+		registrable = psl.Default.Split(q.Name).Registrable
+	}
+	s.Stats.Record(now, action, ip, q.Name, registrable, sig.Any())
+
+	s.Events.Publish(events.Event{
+		Time: now, Kind: "query", Proto: proto, Client: ip, Name: q.Name,
+		Type: dnsmsg.TypeName(q.Type), Action: action, Rule: rule,
+		Suspicious: sig.Label(), TookMicros: now.Sub(start).Microseconds(),
+	})
 }
 
 // clientIP drops the port: detection counts per device, and a device
