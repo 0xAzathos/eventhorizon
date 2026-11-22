@@ -13,10 +13,10 @@ import (
 	"net/url"
 	"time"
 
-	"eventhorizon/internal/api"
-	"eventhorizon/internal/events"
-	"eventhorizon/internal/rules"
-	"eventhorizon/internal/stats"
+	"github.com/0xAzathos/eventhorizon/internal/api"
+	"github.com/0xAzathos/eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/rules"
+	"github.com/0xAzathos/eventhorizon/internal/stats"
 )
 
 // IdleTimeout ends a stream that has been silent this long. The server

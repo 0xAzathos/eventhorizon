@@ -17,19 +17,20 @@ import (
 	"syscall"
 	"time"
 
-	"eventhorizon/internal/api"
-	"eventhorizon/internal/cache"
-	"eventhorizon/internal/control"
-	"eventhorizon/internal/detect"
-	"eventhorizon/internal/events"
-	"eventhorizon/internal/guard"
-	"eventhorizon/internal/lists"
-	"eventhorizon/internal/policy"
-	"eventhorizon/internal/psl"
-	"eventhorizon/internal/rules"
-	"eventhorizon/internal/server"
-	"eventhorizon/internal/stats"
-	"eventhorizon/internal/upstream"
+	"github.com/0xAzathos/eventhorizon/internal/api"
+	"github.com/0xAzathos/eventhorizon/internal/cache"
+	"github.com/0xAzathos/eventhorizon/internal/control"
+	"github.com/0xAzathos/eventhorizon/internal/detect"
+	"github.com/0xAzathos/eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/guard"
+	"github.com/0xAzathos/eventhorizon/internal/lists"
+	"github.com/0xAzathos/eventhorizon/internal/policy"
+	"github.com/0xAzathos/eventhorizon/internal/psl"
+	"github.com/0xAzathos/eventhorizon/internal/rules"
+	"github.com/0xAzathos/eventhorizon/internal/server"
+	"github.com/0xAzathos/eventhorizon/internal/stats"
+	"github.com/0xAzathos/eventhorizon/internal/upstream"
+	"github.com/0xAzathos/eventhorizon/internal/version"
 )
 
 type config struct {
@@ -59,6 +60,7 @@ func main() {
 	flag.StringVar(&cfg.allowlist, "allowlist", "", "allowlist file (plain domains)")
 	flag.StringVar(&cfg.cacheDir, "list-cache-dir", defaultListCacheDir(), "where downloaded lists are kept as fallback")
 	flag.StringVar(&cfg.rulesFile, "rules", defaultRulesFile(), "file for your own allow and block rules (made from telescope or the API)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.DurationVar(&cfg.refresh, "refresh", 24*time.Hour, "reload lists this often, 0 disables")
 	flag.DurationVar(&cfg.timeout, "timeout", 2*time.Second, "timeout for each upstream attempt")
 	flag.IntVar(&cfg.cacheSize, "cache-size", 10000, "max cached replies, 0 disables the cache")
@@ -69,8 +71,13 @@ func main() {
 	flag.StringVar(&cfg.clients, "allow-clients", "loopback,private", "who may send queries: CIDRs, addresses, or the groups loopback, private, any")
 	flag.Float64Var(&cfg.rateLimit, "rate-limit", 200, "queries per second per client (bursts up to 5x), 0 disables")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("eventhorizon", version.String())
+		return
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	log.Info("eventhorizon starting", "version", version.String())
 
 	for _, s := range strings.Split(blocklists, ",") {
 		if s = strings.TrimSpace(s); s != "" {

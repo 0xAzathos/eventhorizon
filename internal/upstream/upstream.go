@@ -28,7 +28,7 @@ import (
 	"sync"
 	"time"
 
-	"eventhorizon/internal/dnsmsg"
+	"github.com/0xAzathos/eventhorizon/internal/dnsmsg"
 )
 
 // DownFor is how long a server that failed is skipped.

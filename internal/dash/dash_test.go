@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"eventhorizon/internal/events"
-	"eventhorizon/internal/stats"
+	"github.com/0xAzathos/eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/stats"
 )
 
 func TestCount(t *testing.T) {

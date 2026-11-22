@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"eventhorizon/internal/psl"
+	"github.com/0xAzathos/eventhorizon/internal/psl"
 )
 
 func defaultModel(t *testing.T) *Model {

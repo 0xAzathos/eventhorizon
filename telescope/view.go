@@ -9,8 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"eventhorizon/internal/dash"
-	"eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/dash"
+	"github.com/0xAzathos/eventhorizon/internal/events"
 )
 
 const (

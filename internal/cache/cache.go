@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"eventhorizon/internal/dnsmsg"
+	"github.com/0xAzathos/eventhorizon/internal/dnsmsg"
 )
 
 // Key identifies which replies are interchangeable. EDNS and the DNSSEC

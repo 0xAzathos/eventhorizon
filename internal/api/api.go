@@ -29,10 +29,10 @@ import (
 	"strconv"
 	"time"
 
-	"eventhorizon/internal/events"
-	"eventhorizon/internal/rules"
-	"eventhorizon/internal/stats"
-	"eventhorizon/internal/upstream"
+	"github.com/0xAzathos/eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/rules"
+	"github.com/0xAzathos/eventhorizon/internal/stats"
+	"github.com/0xAzathos/eventhorizon/internal/upstream"
 )
 
 // ChangeHeader must be present, with any value, on every request that

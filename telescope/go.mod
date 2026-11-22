@@ -1,11 +1,11 @@
-module eventhorizon/telescope
+module github.com/0xAzathos/eventhorizon/telescope
 
 go 1.26.0
 
 require (
 	charm.land/bubbletea/v2 v2.1.2
 	charm.land/lipgloss/v2 v2.1.1
-	eventhorizon v0.0.0
+	github.com/0xAzathos/eventhorizon v0.0.0
 )
 
 require (
@@ -28,4 +28,4 @@ require (
 
 // The TUI lives in its own module so the DNS server itself stays free of
 // dependencies. It uses the server's packages straight from this repo.
-replace eventhorizon => ../
+replace github.com/0xAzathos/eventhorizon => ../

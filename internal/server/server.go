@@ -14,15 +14,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"eventhorizon/internal/cache"
-	"eventhorizon/internal/detect"
-	"eventhorizon/internal/dnsmsg"
-	"eventhorizon/internal/events"
-	"eventhorizon/internal/guard"
-	"eventhorizon/internal/policy"
-	"eventhorizon/internal/psl"
-	"eventhorizon/internal/stats"
-	"eventhorizon/internal/upstream"
+	"github.com/0xAzathos/eventhorizon/internal/cache"
+	"github.com/0xAzathos/eventhorizon/internal/detect"
+	"github.com/0xAzathos/eventhorizon/internal/dnsmsg"
+	"github.com/0xAzathos/eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/guard"
+	"github.com/0xAzathos/eventhorizon/internal/policy"
+	"github.com/0xAzathos/eventhorizon/internal/psl"
+	"github.com/0xAzathos/eventhorizon/internal/stats"
+	"github.com/0xAzathos/eventhorizon/internal/upstream"
 )
 
 // QueryLog chooses which queries get a log line.

@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"eventhorizon/internal/psl"
+	"github.com/0xAzathos/eventhorizon/internal/psl"
 )
 
 type Config struct {

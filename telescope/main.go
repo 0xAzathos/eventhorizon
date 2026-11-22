@@ -13,13 +13,19 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"eventhorizon/internal/apiclient"
-	"eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/apiclient"
+	"github.com/0xAzathos/eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/version"
 )
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:5380", "eventhorizon API address")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("telescope", version.String())
+		return
+	}
 
 	client := apiclient.New(*addr)
 	p := tea.NewProgram(newModel(client, *addr))

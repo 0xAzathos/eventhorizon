@@ -7,12 +7,12 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"eventhorizon/internal/apiclient"
-	"eventhorizon/internal/dash"
-	"eventhorizon/internal/events"
-	"eventhorizon/internal/psl"
-	"eventhorizon/internal/rules"
-	"eventhorizon/internal/stats"
+	"github.com/0xAzathos/eventhorizon/internal/apiclient"
+	"github.com/0xAzathos/eventhorizon/internal/dash"
+	"github.com/0xAzathos/eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/psl"
+	"github.com/0xAzathos/eventhorizon/internal/rules"
+	"github.com/0xAzathos/eventhorizon/internal/stats"
 )
 
 // Messages the program receives besides keys and window sizes.

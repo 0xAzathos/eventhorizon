@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"eventhorizon/internal/dnsmsg"
+	"github.com/0xAzathos/eventhorizon/internal/dnsmsg"
 )
 
 // IdleTimeout closes TCP connections that send nothing for this long.

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"eventhorizon/internal/policy"
-	"eventhorizon/internal/rules"
+	"github.com/0xAzathos/eventhorizon/internal/policy"
+	"github.com/0xAzathos/eventhorizon/internal/rules"
 )
 
 // recorder keeps the last policy the controller installed.

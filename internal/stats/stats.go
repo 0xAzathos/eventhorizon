@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"eventhorizon/internal/upstream"
+	"github.com/0xAzathos/eventhorizon/internal/upstream"
 )
 
 // HistorySeconds is how far back the per second series reaches.

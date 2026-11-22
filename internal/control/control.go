@@ -8,8 +8,8 @@ import (
 	"context"
 	"sync"
 
-	"eventhorizon/internal/policy"
-	"eventhorizon/internal/rules"
+	"github.com/0xAzathos/eventhorizon/internal/policy"
+	"github.com/0xAzathos/eventhorizon/internal/rules"
 )
 
 type Controller struct {

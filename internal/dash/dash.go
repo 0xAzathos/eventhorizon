@@ -9,8 +9,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"eventhorizon/internal/events"
-	"eventhorizon/internal/stats"
+	"github.com/0xAzathos/eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/stats"
 )
 
 // Count formats a counter compactly: 950, 1.2k, 12.3k, 123k, 1.2M.

@@ -1,0 +1,36 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: telescope/go.mod
+          cache-dependency-path: telescope/go.sum
+
+      - name: Test
+        run: |
+          go test -count=1 ./...
+          cd telescope && go test -count=1 ./...
+
+      - name: Build archives
+        run: bash scripts/release.sh "$GITHUB_REF_NAME"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.zip dist/checksums.txt \
+            --title "eventhorizon $GITHUB_REF_NAME" \
+            --generate-notes

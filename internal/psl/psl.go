@@ -22,7 +22,7 @@ import (
 	_ "embed"
 	"strings"
 
-	"eventhorizon/internal/punycode"
+	"github.com/0xAzathos/eventhorizon/internal/punycode"
 )
 
 //go:embed public_suffix_list.dat

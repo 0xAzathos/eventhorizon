@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"eventhorizon/internal/dnsmsg"
+	"github.com/0xAzathos/eventhorizon/internal/dnsmsg"
 )
 
 // testCA makes a throwaway certificate authority and a server certificate

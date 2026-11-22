@@ -5,7 +5,7 @@ import (
 	"net/netip"
 	"time"
 
-	"eventhorizon/internal/guard"
+	"github.com/0xAzathos/eventhorizon/internal/guard"
 )
 
 // Who may ask, and how often. Checked before any parsing, so turned away

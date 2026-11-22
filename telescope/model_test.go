@@ -9,13 +9,13 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"eventhorizon/internal/api"
-	"eventhorizon/internal/apiclient"
-	"eventhorizon/internal/control"
-	"eventhorizon/internal/events"
-	"eventhorizon/internal/policy"
-	"eventhorizon/internal/rules"
-	"eventhorizon/internal/stats"
+	"github.com/0xAzathos/eventhorizon/internal/api"
+	"github.com/0xAzathos/eventhorizon/internal/apiclient"
+	"github.com/0xAzathos/eventhorizon/internal/control"
+	"github.com/0xAzathos/eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/policy"
+	"github.com/0xAzathos/eventhorizon/internal/rules"
+	"github.com/0xAzathos/eventhorizon/internal/stats"
 )
 
 // startAPI runs eventhorizon's real API and controller, so the commands

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"eventhorizon/internal/dnsmsg"
+	"github.com/0xAzathos/eventhorizon/internal/dnsmsg"
 )
 
 var t0 = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)

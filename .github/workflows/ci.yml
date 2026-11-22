@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # telescope needs the newer Go, and that Go builds the server too.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: telescope/go.mod
+          cache-dependency-path: telescope/go.sum
+
+      - name: Format
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+      - name: Server vet and tests
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+
+      - name: telescope vet and tests
+        working-directory: telescope
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+
+      - name: Release build check
+        run: bash scripts/release.sh ci-check

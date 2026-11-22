@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"eventhorizon/internal/dnsmsg"
+	"github.com/0xAzathos/eventhorizon/internal/dnsmsg"
 )
 
 func query(id uint16, name string) []byte {

@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"eventhorizon/internal/api"
-	"eventhorizon/internal/control"
-	"eventhorizon/internal/events"
-	"eventhorizon/internal/policy"
-	"eventhorizon/internal/rules"
-	"eventhorizon/internal/stats"
+	"github.com/0xAzathos/eventhorizon/internal/api"
+	"github.com/0xAzathos/eventhorizon/internal/control"
+	"github.com/0xAzathos/eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/policy"
+	"github.com/0xAzathos/eventhorizon/internal/rules"
+	"github.com/0xAzathos/eventhorizon/internal/stats"
 )
 
 // startAPI runs the real API on a random loopback port.

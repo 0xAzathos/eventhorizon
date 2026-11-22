@@ -19,8 +19,8 @@ import (
 	"strconv"
 	"strings"
 
-	"eventhorizon/internal/detect"
-	"eventhorizon/internal/psl"
+	"github.com/0xAzathos/eventhorizon/internal/detect"
+	"github.com/0xAzathos/eventhorizon/internal/psl"
 )
 
 func main() {

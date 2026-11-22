@@ -19,7 +19,7 @@ import (
 	"strings"
 	"sync"
 
-	"eventhorizon/internal/policy"
+	"github.com/0xAzathos/eventhorizon/internal/policy"
 )
 
 const (

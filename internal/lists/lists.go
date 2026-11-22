@@ -17,7 +17,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"eventhorizon/internal/policy"
+	"github.com/0xAzathos/eventhorizon/internal/policy"
+	"github.com/0xAzathos/eventhorizon/internal/version"
 )
 
 // DefaultMaxBytes caps a single download. The biggest common lists are a
@@ -100,7 +101,7 @@ func (l *Loader) fetch(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "eventhorizon-dns-sinkhole")
+	req.Header.Set("User-Agent", "eventhorizon/"+version.String())
 
 	resp, err := l.Client.Do(req)
 	if err != nil {
