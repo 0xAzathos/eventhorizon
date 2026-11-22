@@ -85,7 +85,8 @@ func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
 		return dnsmsg.ErrorResponse(msg, dnsmsg.RcodeFormErr)
 	}
 
-	decision := s.policy.Load().Decide(q.Name)
+	pol := s.policy.Load()
+	decision := pol.Decide(q.Name)
 	var sig detect.Signals
 	if !decision.Blocked {
 		sig = s.Detect.Inspect(q.Name)
@@ -116,13 +117,31 @@ func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
 		} else {
 			s.Cache.Put(q, resp, time.Now())
 			action = "allowed"
-			// Over TCP or TLS the upstream sends the full answer however
-			// big. A UDP client only takes what it advertised; anything
-			// larger becomes "truncated, retry over TCP".
-			if len(resp) > maxSize {
-				resp = dnsmsg.Truncate(resp)
+		}
+	}
+
+	// CNAME cloaking: a first party looking name can be an alias for a
+	// tracker. Check every name the answer points to. This also runs on
+	// cache hits, so a list reload applies to answers cached before it.
+	// Names on the allowlist (a matching rule that did not block) are
+	// left alone.
+	var via string
+	if (action == "allowed" || action == "cached") && decision.Rule == "" {
+		if targets, err := dnsmsg.CNAMETargets(resp); err == nil {
+			for _, target := range targets {
+				if d := pol.Decide(target); d.Blocked {
+					resp, action, decision, via = q.Blocked(), "blocked", d, target
+					break
+				}
 			}
 		}
+	}
+
+	// Over TCP or TLS the upstream sends the full answer however big. A
+	// UDP client only takes what it advertised; anything larger becomes
+	// "truncated, retry over TCP". (Cached answers are already size checked.)
+	if action == "allowed" && len(resp) > maxSize {
+		resp = dnsmsg.Truncate(resp)
 	}
 
 	// Detection needs the outcome: a random looking name that does not
@@ -145,15 +164,15 @@ func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
 		}
 	}
 
-	s.record(proto, client, q, action, decision.Rule, sig, start)
+	s.record(proto, client, q, action, decision.Rule, via, sig, start)
 
 	if s.QueryLog == LogAll || (s.QueryLog == LogBlocked && (decision.Blocked || sig.Any())) {
-		s.logQuery(proto, client, q, action, decision.Rule, sig, start)
+		s.logQuery(proto, client, q, action, decision.Rule, via, sig, start)
 	}
 	return resp
 }
 
-func (s *Server) logQuery(proto string, client net.Addr, q *dnsmsg.Query, action, rule string, sig detect.Signals, start time.Time) {
+func (s *Server) logQuery(proto string, client net.Addr, q *dnsmsg.Query, action, rule, via string, sig detect.Signals, start time.Time) {
 	attrs := []any{
 		"proto", proto,
 		"client", client.String(),
@@ -163,6 +182,9 @@ func (s *Server) logQuery(proto string, client net.Addr, q *dnsmsg.Query, action
 		"rule", rule,
 		"took", time.Since(start).Round(time.Microsecond),
 	}
+	if via != "" {
+		attrs = append(attrs, "via", via) // blocked through this CNAME target
+	}
 	if label := sig.Label(); label != "" {
 		attrs = append(attrs, "suspicious", label)
 	}
@@ -170,7 +192,7 @@ func (s *Server) logQuery(proto string, client net.Addr, q *dnsmsg.Query, action
 }
 
 // record feeds the dashboard: totals and top lists, plus the live stream.
-func (s *Server) record(proto string, client net.Addr, q *dnsmsg.Query, action, rule string, sig detect.Signals, start time.Time) {
+func (s *Server) record(proto string, client net.Addr, q *dnsmsg.Query, action, rule, via string, sig detect.Signals, start time.Time) {
 	if s.Stats == nil && s.Events == nil {
 		return
 	}
@@ -185,7 +207,7 @@ func (s *Server) record(proto string, client net.Addr, q *dnsmsg.Query, action, 
 
 	s.Events.Publish(events.Event{
 		Time: now, Kind: "query", Proto: proto, Client: ip, Name: q.Name,
-		Type: dnsmsg.TypeName(q.Type), Action: action, Rule: rule,
+		Type: dnsmsg.TypeName(q.Type), Action: action, Rule: rule, Via: via,
 		Suspicious: sig.Label(), TookMicros: now.Sub(start).Microseconds(),
 	})
 }

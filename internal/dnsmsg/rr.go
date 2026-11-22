@@ -13,12 +13,13 @@ const (
 //
 //	name | type (2) | class (2) | ttl (4) | rdlength (2) | rdata
 type RR struct {
-	Section int
-	Type    uint16
-	Class   uint16
-	TTL     uint32
-	TTLOff  int    // where the TTL sits in the message, for rewriting
-	RData   []byte // slice of the original message
+	Section  int
+	Type     uint16
+	Class    uint16
+	TTL      uint32
+	TTLOff   int    // where the TTL sits in the message, for rewriting
+	RData    []byte // slice of the original message
+	RDataOff int    // where RData starts, for names that use compression
 }
 
 // skipName steps over a name without decoding it. Names in records may end
@@ -60,12 +61,13 @@ func readRR(msg []byte, off, section int) (RR, int, error) {
 		return RR{}, 0, ErrShort
 	}
 	return RR{
-		Section: section,
-		Type:    be16(msg, off),
-		Class:   be16(msg, off+2),
-		TTL:     binary.BigEndian.Uint32(msg[off+4:]),
-		TTLOff:  off + 4,
-		RData:   msg[rdStart:rdEnd],
+		Section:  section,
+		Type:     be16(msg, off),
+		Class:    be16(msg, off+2),
+		TTL:      binary.BigEndian.Uint32(msg[off+4:]),
+		TTLOff:   off + 4,
+		RData:    msg[rdStart:rdEnd],
+		RDataOff: rdStart,
 	}, rdEnd, nil
 }
 

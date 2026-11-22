@@ -24,6 +24,7 @@ type Event struct {
 	Type       string `json:"type,omitempty"`
 	Action     string `json:"action,omitempty"` // allowed, blocked, cached, servfail
 	Rule       string `json:"rule,omitempty"`
+	Via        string `json:"via,omitempty"` // blocked through this CNAME target
 	Suspicious string `json:"suspicious,omitempty"`
 	TookMicros int64  `json:"took_us,omitempty"`
 

@@ -476,3 +476,102 @@ func TestOversizedAnswerIsTruncatedForUDP(t *testing.T) {
 		t.Errorf("TCP reply has %d answers, TC=%v", n, full[2]&0x02 != 0)
 	}
 }
+
+// cloakedAnswer replies the way a cloaked tracker does: the asked name is
+// a CNAME for edge.tracker.example, followed by that name's address.
+func cloakedAnswer(q []byte) []byte {
+	r := append([]byte(nil), q...)
+	r[2] |= 0x80
+	r[7] = 2 // two answers
+	target := []byte("\x04edge\x07tracker\x07example\x00")
+	r = append(r, 0xC0, 0x0C, 0, 5, 0, 1, 0, 0, 0x01, 0x2C, 0, byte(len(target)))
+	targetOff := len(r)
+	r = append(r, target...)
+	r = append(r, 0xC0|byte(targetOff>>8), byte(targetOff), 0, 1, 0, 1, 0, 0, 0x01, 0x2C, 0, 4, 9, 9, 9, 9)
+	return r
+}
+
+// cnameServer runs a server over cloakedAnswer with the given policy and
+// returns its address, the server and a live event feed.
+func cnameServer(t *testing.T, pol *policy.Policy, c *cache.Cache) (string, *Server, <-chan events.Event) {
+	t.Helper()
+	up, _ := fakeUpstreamWith(t, cloakedAnswer)
+	hub := events.NewHub()
+	feed, cancel := hub.Subscribe()
+	t.Cleanup(cancel)
+	srv := &Server{
+		Cache:    c,
+		Events:   hub,
+		Upstream: newPool(t, up),
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	srv.SetPolicy(pol)
+	pc, ln := listenBoth(t)
+	go srv.ServeUDP(pc)
+	go srv.ServeTCP(ln)
+	return pc.LocalAddr().String(), srv, feed
+}
+
+func nextEvent(t *testing.T, feed <-chan events.Event) events.Event {
+	t.Helper()
+	select {
+	case e := <-feed:
+		return e
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event")
+		return events.Event{}
+	}
+}
+
+func TestCNAMECloakedTrackerIsBlocked(t *testing.T) {
+	block := policy.NewSet()
+	block.Add("tracker.example")
+	addr, _, feed := cnameServer(t, &policy.Policy{Block: block}, nil)
+
+	resp := exchangeUDP(t, addr, query(40, "metrics.shop.example", 1))
+	if !isBlockedA(resp) {
+		t.Fatalf("cloaked tracker not sinkholed: % x", resp)
+	}
+	e := nextEvent(t, feed)
+	if e.Action != "blocked" || e.Via != "edge.tracker.example" || e.Rule != "tracker.example" {
+		t.Errorf("event %+v", e)
+	}
+}
+
+func TestCNAMEAllowlistWins(t *testing.T) {
+	block, allow := policy.NewSet(), policy.NewSet()
+	block.Add("tracker.example")
+	allow.Add("metrics.shop.example")
+	addr, _, _ := cnameServer(t, &policy.Policy{Block: block, Allow: allow}, nil)
+
+	resp := exchangeUDP(t, addr, query(41, "metrics.shop.example", 1))
+	if isBlockedA(resp) || binary.BigEndian.Uint16(resp[6:]) != 2 {
+		t.Errorf("allowlisted name was blocked through its CNAME: % x", resp)
+	}
+}
+
+func TestCNAMECheckAppliesToCachedAnswers(t *testing.T) {
+	addr, srv, _ := cnameServer(t, &policy.Policy{Block: policy.NewSet()}, cache.New(100, time.Hour))
+
+	if resp := exchangeUDP(t, addr, query(42, "metrics.shop.example", 1)); isBlockedA(resp) {
+		t.Fatal("blocked before any list mentions the tracker")
+	}
+	// A list reload adds the tracker; the cached answer must not slip past.
+	block := policy.NewSet()
+	block.Add("tracker.example")
+	srv.SetPolicy(&policy.Policy{Block: block})
+	if resp := exchangeUDP(t, addr, query(43, "metrics.shop.example", 1)); !isBlockedA(resp) {
+		t.Error("cached answer bypassed the CNAME check")
+	}
+}
+
+func TestCNAMEUnrelatedTargetPassesThrough(t *testing.T) {
+	block := policy.NewSet()
+	block.Add("ads.example")
+	addr, _, _ := cnameServer(t, &policy.Policy{Block: block}, nil)
+
+	resp := exchangeUDP(t, addr, query(44, "metrics.shop.example", 1))
+	if isBlockedA(resp) || !bytes.Equal(resp[len(resp)-4:], []byte{9, 9, 9, 9}) {
+		t.Errorf("unrelated CNAME changed the answer: % x", resp)
+	}
+}

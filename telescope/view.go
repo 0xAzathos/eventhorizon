@@ -237,8 +237,11 @@ func (m model) logPanel(w, h int) string {
 func logLine(e events.Event, typeW, nameW, clientW int) string {
 	sym, s := actionStyle(e.Action)
 	tag := ""
+	if e.Via != "" {
+		tag = " [cname]" // blocked because its alias points at a tracker
+	}
 	if e.Suspicious != "" {
-		tag = " [" + e.Suspicious + "]"
+		tag += " [" + e.Suspicious + "]"
 	}
 	name := dash.Truncate(e.Name, nameW-len(tag))
 
