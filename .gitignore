@@ -3,3 +3,5 @@
 /.list-cache/
 /eventhorizon-rules.txt
 /dist/
+/telescope/telescope
+/telescope/eventhorizon
