@@ -101,17 +101,35 @@ func (s *Set) Load(r io.Reader) (int, error) {
 // Decision is the outcome for one name, with the rule that caused it.
 type Decision struct {
 	Blocked bool
-	Rule    string // the matching list entry, "" if nothing matched
+	Rule    string // the matching entry, "" if nothing matched
+	Mine    bool   // the rule is one of the user's own (UserAllow/UserBlock)
 }
 
+// Policy decides in this order, first match wins:
+//
+//  1. UserAllow  your own allow rules
+//  2. UserBlock  your own block rules
+//  3. Allow      the allowlist file
+//  4. Block      the blocklists
+//
+// Your own rules beat the lists in both directions: they are the most
+// recent, most explicit choice.
 type Policy struct {
-	Block *Set
-	Allow *Set
+	Block     *Set
+	Allow     *Set
+	UserAllow *Set
+	UserBlock *Set
 }
 
 func (p *Policy) Decide(name string) Decision {
+	if rule, ok := p.UserAllow.Match(name); ok {
+		return Decision{Rule: rule, Mine: true}
+	}
+	if rule, ok := p.UserBlock.Match(name); ok {
+		return Decision{Blocked: true, Rule: rule, Mine: true}
+	}
 	if rule, ok := p.Allow.Match(name); ok {
-		return Decision{Blocked: false, Rule: rule}
+		return Decision{Rule: rule}
 	}
 	if rule, ok := p.Block.Match(name); ok {
 		return Decision{Blocked: true, Rule: rule}

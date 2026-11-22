@@ -3,14 +3,19 @@ package apiclient
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"time"
 
+	"eventhorizon/internal/api"
 	"eventhorizon/internal/events"
+	"eventhorizon/internal/rules"
 	"eventhorizon/internal/stats"
 )
 
@@ -103,4 +108,72 @@ func (c *Client) Stream(ctx context.Context, handle func(events.Event)) error {
 func Backoff(n int) time.Duration {
 	d := 500 * time.Millisecond << min(n, 4)
 	return min(d, 5*time.Second)
+}
+
+// errorFrom turns a non 2xx response into an error with the server's
+// message when it sent one.
+func errorFrom(resp *http.Response) error {
+	var body struct {
+		Error string `json:"error"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&body) == nil && body.Error != "" {
+		return errors.New(body.Error)
+	}
+	return fmt.Errorf("%s", resp.Status)
+}
+
+// do sends a change request; every change carries api.ChangeHeader.
+func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	var rd io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		rd = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, rd)
+	if err != nil {
+		return err
+	}
+	if method != http.MethodGet {
+		req.Header.Set(api.ChangeHeader, "telescope")
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return errorFrom(resp)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+func (c *Client) Rules(ctx context.Context) ([]rules.Rule, error) {
+	var out []rules.Rule
+	err := c.do(ctx, http.MethodGet, "/api/rules", nil, &out)
+	return out, err
+}
+
+// SetRule allows or blocks domain and its subdomains.
+func (c *Client) SetRule(ctx context.Context, domain, action string) (rules.Rule, error) {
+	var out rules.Rule
+	err := c.do(ctx, http.MethodPost, "/api/rules", rules.Rule{Domain: domain, Action: action}, &out)
+	return out, err
+}
+
+func (c *Client) RemoveRule(ctx context.Context, domain string) error {
+	return c.do(ctx, http.MethodDelete, "/api/rules?domain="+url.QueryEscape(domain), nil, nil)
+}
+
+// Reload downloads the blocklists again; it can take a while.
+func (c *Client) Reload(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/api/reload", nil, nil)
 }

@@ -12,18 +12,21 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"eventhorizon/internal/api"
 	"eventhorizon/internal/cache"
+	"eventhorizon/internal/control"
 	"eventhorizon/internal/detect"
 	"eventhorizon/internal/events"
 	"eventhorizon/internal/guard"
 	"eventhorizon/internal/lists"
 	"eventhorizon/internal/policy"
 	"eventhorizon/internal/psl"
+	"eventhorizon/internal/rules"
 	"eventhorizon/internal/server"
 	"eventhorizon/internal/stats"
 	"eventhorizon/internal/upstream"
@@ -44,6 +47,7 @@ type config struct {
 	apiAddr     string
 	clients     string
 	rateLimit   float64
+	rulesFile   string
 }
 
 func main() {
@@ -54,6 +58,7 @@ func main() {
 	flag.StringVar(&blocklists, "blocklist", "", "comma separated blocklist files or http(s) URLs")
 	flag.StringVar(&cfg.allowlist, "allowlist", "", "allowlist file (plain domains)")
 	flag.StringVar(&cfg.cacheDir, "list-cache-dir", defaultListCacheDir(), "where downloaded lists are kept as fallback")
+	flag.StringVar(&cfg.rulesFile, "rules", defaultRulesFile(), "file for your own allow and block rules (made from telescope or the API)")
 	flag.DurationVar(&cfg.refresh, "refresh", 24*time.Hour, "reload lists this often, 0 disables")
 	flag.DurationVar(&cfg.timeout, "timeout", 2*time.Second, "timeout for each upstream attempt")
 	flag.IntVar(&cfg.cacheSize, "cache-size", 10000, "max cached replies, 0 disables the cache")
@@ -82,6 +87,15 @@ func main() {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
+}
+
+// defaultRulesFile keeps rules with the service's other state, or next to
+// where eventhorizon runs during development.
+func defaultRulesFile() string {
+	if dir := os.Getenv("STATE_DIRECTORY"); dir != "" {
+		return filepath.Join(dir, "rules.txt")
+	}
+	return "eventhorizon-rules.txt"
 }
 
 // defaultListCacheDir uses the directory systemd creates for StateDirectory=
@@ -155,11 +169,20 @@ func run(log *slog.Logger, cfg config) error {
 		CacheDir: cfg.cacheDir,
 	}
 
+	// Your own rules live in their own file and are applied on top of the
+	// lists by the controller, which installs every policy from now on.
+	ruleStore, err := rules.Open(cfg.rulesFile)
+	if err != nil {
+		return err
+	}
+	ctl := control.New(ruleStore, srv.SetPolicy)
+	log.Info("rules loaded", "file", cfg.rulesFile, "rules", len(ruleStore.List()))
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// At startup, partial success is fine: better some blocking than none.
-	if err := reload(ctx, log, loader, srv, cfg, false); err != nil {
+	if err := reload(ctx, log, loader, ctl, cfg, false); err != nil {
 		return err
 	}
 
@@ -191,6 +214,7 @@ func run(log *slog.Logger, cfg config) error {
 		}
 		handler.Sizes = func() (int, int) { return srv.BlocklistSize(), c.Len() }
 		handler.Upstreams = pool.Status
+		handler.Control = ctl
 		apiLn, err := net.Listen("tcp", cfg.apiAddr)
 		if err != nil {
 			return err
@@ -226,17 +250,27 @@ func run(log *slog.Logger, cfg config) error {
 			log.Info("reload requested")
 		case <-tick:
 			log.Info("scheduled reload")
+		case reply := <-ctl.Requests():
+			// From the API. Handled here, so it can never overlap with a
+			// scheduled reload or one from SIGHUP.
+			log.Info("reload requested through the API")
+			err := reload(ctx, log, loader, ctl, cfg, true)
+			if err != nil {
+				log.Warn("reload failed, keeping previous lists", "err", err)
+			}
+			reply <- err
+			continue
 		}
 		// After startup, be strict: if any list is unavailable, keep the
 		// policy we already have rather than silently block less.
-		if err := reload(ctx, log, loader, srv, cfg, true); err != nil {
+		if err := reload(ctx, log, loader, ctl, cfg, true); err != nil {
 			log.Warn("reload failed, keeping previous lists", "err", err)
 		}
 	}
 }
 
 // reload builds a complete new policy and only then swaps it in.
-func reload(ctx context.Context, log *slog.Logger, loader *lists.Loader, srv *server.Server, cfg config, strict bool) error {
+func reload(ctx context.Context, log *slog.Logger, loader *lists.Loader, ctl *control.Controller, cfg config, strict bool) error {
 	block, reports := loader.Build(ctx, cfg.sources)
 
 	failed := 0
@@ -271,7 +305,7 @@ func reload(ctx context.Context, log *slog.Logger, loader *lists.Loader, srv *se
 		}
 	}
 
-	srv.SetPolicy(&policy.Policy{Block: block, Allow: allow})
+	ctl.SetLists(block, allow)
 	log.Info("lists active", "blocked_domains", block.Len(), "allowed_domains", allow.Len())
 	return nil
 }

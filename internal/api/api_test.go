@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"eventhorizon/internal/events"
+	"eventhorizon/internal/rules"
 	"eventhorizon/internal/stats"
 )
 
@@ -70,6 +72,7 @@ func TestRejectsForeignHost(t *testing.T) {
 func TestOnlyGET(t *testing.T) {
 	s, _, _ := newAPI(t)
 	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:5380/api/stats", nil)
+	r.Header.Set(ChangeHeader, "1")
 	w := httptest.NewRecorder()
 	s.ServeHTTP(w, r)
 	if w.Code != http.StatusMethodNotAllowed {
@@ -142,5 +145,117 @@ func TestEventJSONOmitsEmptyFields(t *testing.T) {
 	b, _ := json.Marshal(events.Event{Kind: "query", Name: "a.example", Action: "allowed"})
 	if strings.Contains(string(b), "alert") || strings.Contains(string(b), "examples") {
 		t.Errorf("empty alert fields serialized: %s", b)
+	}
+}
+
+// fakeControl stands in for internal/control.
+type fakeControl struct {
+	rules     map[string]string
+	reloadErr error
+	reloads   int
+}
+
+func (f *fakeControl) Rules() []rules.Rule {
+	var out []rules.Rule
+	for d, a := range f.rules {
+		out = append(out, rules.Rule{Domain: d, Action: a})
+	}
+	return out
+}
+
+func (f *fakeControl) SetRule(domain, action string) (rules.Rule, error) {
+	if action != rules.Allow && action != rules.Block {
+		return rules.Rule{}, errors.New("bad action")
+	}
+	f.rules[domain] = action
+	return rules.Rule{Domain: domain, Action: action}, nil
+}
+
+func (f *fakeControl) RemoveRule(domain string) (bool, error) {
+	_, ok := f.rules[domain]
+	delete(f.rules, domain)
+	return ok, nil
+}
+
+func (f *fakeControl) Reload(context.Context) error {
+	f.reloads++
+	return f.reloadErr
+}
+
+func change(s *Server, method, path, body string, withHeader bool) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, "http://127.0.0.1:5380"+path, strings.NewReader(body))
+	if withHeader {
+		r.Header.Set(ChangeHeader, "1")
+	}
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	return w
+}
+
+func TestChangesNeedTheHeader(t *testing.T) {
+	s, _, _ := newAPI(t)
+	fc := &fakeControl{rules: map[string]string{}}
+	s.Control = fc
+
+	// What a malicious web page can send: a simple cross site POST.
+	w := change(s, http.MethodPost, "/api/rules", `{"domain":"tracker.example","action":"allow"}`, false)
+	if w.Code != http.StatusForbidden || len(fc.rules) != 0 {
+		t.Errorf("status %d, rules %v: change without the header went through", w.Code, fc.rules)
+	}
+	if w := change(s, http.MethodPost, "/api/reload", "", false); w.Code != http.StatusForbidden || fc.reloads != 0 {
+		t.Errorf("reload without the header: status %d", w.Code)
+	}
+}
+
+func TestRuleEndpoints(t *testing.T) {
+	s, _, _ := newAPI(t)
+	fc := &fakeControl{rules: map[string]string{}}
+	s.Control = fc
+
+	w := change(s, http.MethodPost, "/api/rules", `{"domain":"github.com","action":"allow"}`, true)
+	if w.Code != http.StatusOK || fc.rules["github.com"] != "allow" {
+		t.Fatalf("set: status %d body %s", w.Code, w.Body)
+	}
+
+	w = get(s, "127.0.0.1:5380", "/api/rules")
+	var list []rules.Rule
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil || len(list) != 1 || list[0].Domain != "github.com" {
+		t.Errorf("list: %s %v", w.Body, err)
+	}
+
+	if w := change(s, http.MethodPost, "/api/rules", `{"domain":"x.example","action":"maybe"}`, true); w.Code != http.StatusBadRequest {
+		t.Errorf("bad action: status %d", w.Code)
+	}
+	if w := change(s, http.MethodPost, "/api/rules", `not json`, true); w.Code != http.StatusBadRequest {
+		t.Errorf("bad body: status %d", w.Code)
+	}
+
+	if w := change(s, http.MethodDelete, "/api/rules?domain=github.com", "", true); w.Code != http.StatusNoContent || len(fc.rules) != 0 {
+		t.Errorf("delete: status %d", w.Code)
+	}
+	if w := change(s, http.MethodDelete, "/api/rules?domain=github.com", "", true); w.Code != http.StatusNotFound {
+		t.Errorf("delete missing: status %d", w.Code)
+	}
+}
+
+func TestReloadEndpoint(t *testing.T) {
+	s, _, _ := newAPI(t)
+	fc := &fakeControl{rules: map[string]string{}}
+	s.Control = fc
+
+	if w := change(s, http.MethodPost, "/api/reload", "", true); w.Code != http.StatusNoContent || fc.reloads != 1 {
+		t.Errorf("reload: status %d, reloads %d", w.Code, fc.reloads)
+	}
+	fc.reloadErr = errors.New("1 of 1 blocklists unavailable")
+	w := change(s, http.MethodPost, "/api/reload", "", true)
+	if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "unavailable") {
+		t.Errorf("failed reload: status %d body %s", w.Code, w.Body)
+	}
+}
+
+func TestChangesWithoutControl(t *testing.T) {
+	s, _, _ := newAPI(t)
+	if w := change(s, http.MethodPost, "/api/reload", "", true); w.Code != http.StatusNotImplemented {
+		t.Errorf("status %d, want 501", w.Code)
 	}
 }

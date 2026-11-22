@@ -92,3 +92,34 @@ func TestNilAllowlist(t *testing.T) {
 		t.Error("expected block with nil allowlist")
 	}
 }
+
+func TestUserRulesBeatLists(t *testing.T) {
+	lists, file := NewSet(), NewSet()
+	lists.Add("tracker.com")
+	lists.Add("ads.example")
+	file.Add("cdn.example")
+	userAllow, userBlock := NewSet(), NewSet()
+	userAllow.Add("good.tracker.com") // unblock one subdomain of a listed tracker
+	userBlock.Add("cdn.example")      // block something the allowlist file allows
+	p := Policy{Block: lists, Allow: file, UserAllow: userAllow, UserBlock: userBlock}
+
+	cases := []struct {
+		name    string
+		blocked bool
+		rule    string
+		mine    bool
+	}{
+		{"good.tracker.com", false, "good.tracker.com", true},
+		{"x.good.tracker.com", false, "good.tracker.com", true},
+		{"bad.tracker.com", true, "tracker.com", false},
+		{"img.cdn.example", true, "cdn.example", true},
+		{"ads.example", true, "ads.example", false},
+		{"other.org", false, "", false},
+	}
+	for _, c := range cases {
+		d := p.Decide(c.name)
+		if d.Blocked != c.blocked || d.Rule != c.rule || d.Mine != c.mine {
+			t.Errorf("%s: %+v, want blocked=%v rule=%q mine=%v", c.name, d, c.blocked, c.rule, c.mine)
+		}
+	}
+}

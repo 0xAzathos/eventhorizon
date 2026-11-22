@@ -4,13 +4,25 @@
 //	GET /api/stats   JSON snapshot: totals, per second history, top lists
 //	GET /api/events  newline delimited JSON: recent events, then live ones
 //
+//	GET    /api/rules   the user's own allow and block rules
+//	POST   /api/rules   {"domain": "...", "action": "allow"|"block"}
+//	DELETE /api/rules?domain=...
+//	POST   /api/reload  download the blocklists again
+//
 // The data is effectively the machine's browsing history, so the API only
 // answers requests addressed to a loopback name. That stops DNS rebinding:
 // a web page that points its own domain at 127.0.0.1 still sends its own
 // domain in the Host header, and gets refused.
+//
+// Changes need one more defense. Browsers let any web page send a simple
+// POST to 127.0.0.1, with the right Host header, without asking (they only
+// hide the reply). So every change request must carry the ChangeHeader.
+// A browser will not add a custom header to a cross site request without
+// first asking permission (a CORS preflight), which this API never grants.
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -18,11 +30,25 @@ import (
 	"time"
 
 	"eventhorizon/internal/events"
+	"eventhorizon/internal/rules"
 	"eventhorizon/internal/stats"
 	"eventhorizon/internal/upstream"
 )
 
+// ChangeHeader must be present, with any value, on every request that
+// changes something.
+const ChangeHeader = "X-Eventhorizon-Change"
+
+// Control is what the change endpoints act on (see internal/control).
+type Control interface {
+	Rules() []rules.Rule
+	SetRule(domain, action string) (rules.Rule, error)
+	RemoveRule(domain string) (bool, error)
+	Reload(ctx context.Context) error
+}
+
 type Server struct {
+	Control   Control // nil: change endpoints answer 501
 	Stats     *stats.Stats
 	Hub       *events.Hub
 	Sizes     func() (blocklist, cache int) // optional, filled into snapshots
@@ -53,12 +79,20 @@ func New(addr string, st *stats.Stats, hub *events.Hub) (*Server, error) {
 	}
 	s.mux.HandleFunc("GET /api/stats", s.stats)
 	s.mux.HandleFunc("GET /api/events", s.events)
+	s.mux.HandleFunc("GET /api/rules", s.listRules)
+	s.mux.HandleFunc("POST /api/rules", s.setRule)
+	s.mux.HandleFunc("DELETE /api/rules", s.removeRule)
+	s.mux.HandleFunc("POST /api/reload", s.reload)
 	return s, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !s.allows[r.Host] {
 		http.Error(w, "forbidden host", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get(ChangeHeader) == "" {
+		http.Error(w, "missing "+ChangeHeader+" header", http.StatusForbidden)
 		return
 	}
 	s.mux.ServeHTTP(w, r)
@@ -135,6 +169,76 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+type errorBody struct {
+	Error string `json:"error"`
+}
+
+func (s *Server) control(w http.ResponseWriter) bool {
+	if s.Control == nil {
+		writeJSON(w, http.StatusNotImplemented, errorBody{"rule changes are not enabled"})
+		return false
+	}
+	return true
+}
+
+func (s *Server) listRules(w http.ResponseWriter, r *http.Request) {
+	if s.control(w) {
+		writeJSON(w, http.StatusOK, s.Control.Rules())
+	}
+}
+
+func (s *Server) setRule(w http.ResponseWriter, r *http.Request) {
+	if !s.control(w) {
+		return
+	}
+	var req rules.Rule
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{"body must be JSON: {\"domain\": ..., \"action\": ...}"})
+		return
+	}
+	rule, err := s.Control.SetRule(req.Domain, req.Action)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorBody{err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, rule)
+}
+
+func (s *Server) removeRule(w http.ResponseWriter, r *http.Request) {
+	if !s.control(w) {
+		return
+	}
+	ok, err := s.Control.RemoveRule(r.URL.Query().Get("domain"))
+	switch {
+	case err != nil:
+		writeJSON(w, http.StatusBadRequest, errorBody{err.Error()})
+	case !ok:
+		writeJSON(w, http.StatusNotFound, errorBody{"no rule for that domain"})
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func (s *Server) reload(w http.ResponseWriter, r *http.Request) {
+	if !s.control(w) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	if err := s.Control.Reload(ctx); err != nil {
+		writeJSON(w, http.StatusBadGateway, errorBody{err.Error()})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // IsLoopback reports whether addr's host is a loopback address, so the

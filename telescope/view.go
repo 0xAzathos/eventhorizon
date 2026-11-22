@@ -25,6 +25,16 @@ func (m model) View() tea.View {
 	return v
 }
 
+// layout splits the screen: header 1, cards 5, middle, bottom, footer 1.
+// model.go uses it too, to know how many log lines fit.
+func (m model) layout() (midH, botH, leftW int) {
+	avail := m.height - 7
+	midH = max(9, avail*2/5)
+	botH = avail - midH
+	leftW = m.width * 3 / 5
+	return midH, botH, leftW
+}
+
 func (m model) render() string {
 	W, H := m.width, m.height
 	if W == 0 {
@@ -35,12 +45,16 @@ func (m model) render() string {
 		return lipgloss.Place(W, H, lipgloss.Center, lipgloss.Center, msg)
 	}
 
-	// Rows: header 1, cards 5, middle, bottom, footer 1.
-	avail := H - 7
-	midH := max(9, avail*2/5)
-	botH := avail - midH
-	leftW := W * 3 / 5
+	switch m.mode {
+	case modeHelp:
+		return lipgloss.JoinVertical(lipgloss.Left, m.header(W), m.helpScreen(W, H-2), m.footer(W))
+	case modeRules:
+		return lipgloss.JoinVertical(lipgloss.Left, m.header(W), m.rulesScreen(W, H-2), m.footer(W))
+	}
+
+	midH, botH, leftW := m.layout()
 	rightW := W - leftW
+
 	// Below the alerts sits "Top clients", but only if both fit; on short
 	// terminals the alerts get the whole column.
 	alertsH, clientsH := botH, 0
@@ -205,33 +219,80 @@ func (m model) topBlockedPanel(w, h int) string {
 
 func (m model) logPanel(w, h int) string {
 	inner := w - 4
-	status := sDim.Render("filter: ") + sKey.Render(m.filter.String())
-	if m.paused {
-		status = fg(cAmber).Bold(true).Render("PAUSED  ") + status
+
+	// Title line: what the log is showing and how to steer it.
+	var status string
+	switch {
+	case m.typing:
+		status = sKey.Render("/") + sText.Render(m.search) + fg(cCyan).Render("▌") + sDim.Render("  enter done · esc clear")
+	case m.mode == modeSelect:
+		status = fg(cViolet).Bold(true).Render("SELECT") + sDim.Render("  a allow · b block · esc live")
+	default:
+		status = sDim.Render("filter: ") + sKey.Render(m.filter.String())
+		if m.search != "" {
+			status = sDim.Render("search: ") + sKey.Render(m.search) + sDim.Render("  ") + status
+		}
+		if m.paused {
+			status = fg(cAmber).Bold(true).Render("PAUSED  ") + status
+		}
 	}
 	lines := []string{spread(inner, sTitle.Render("Live queries"), status)}
 
-	shown := m.log.Latest(h-3, m.filter)
-	if len(shown) == 0 {
-		return panel(w, h, append(lines, sDim.Render("waiting for queries…")))
+	shown := m.shown()
+	if m.mode == modeSelect {
+		lines = append(lines, m.detailLine(inner))
 	}
+	if len(shown) == 0 {
+		empty := "waiting for queries…"
+		if m.search != "" || m.filter != dash.ShowAll {
+			empty = "nothing matches"
+		}
+		return panel(w, h, append(lines, sDim.Render(empty)))
+	}
+
+	rows := m.logRows()
+	end := min(m.offset+rows, len(shown))
+	visible := shown[min(m.offset, end):end]
 
 	// The type column is as wide as the longest type on screen, so a log
 	// of plain "A" queries does not leave a gap.
 	typeW := 1
-	for _, e := range shown {
+	for _, e := range visible {
 		typeW = max(typeW, len(e.Type))
 	}
-	// time(8) sym(1) action(8) type, single spaces between.
-	fixed := 8 + 1 + 1 + 1 + 8 + 1 + typeW + 1
+	// gutter(2) time(8) sym(1) action(8) type, single spaces between.
+	fixed := 2 + 8 + 1 + 1 + 1 + 8 + 1 + typeW + 1
 	clientW := 0
 	if inner >= 90 {
 		clientW = 16
 	}
-	for _, e := range shown {
-		lines = append(lines, logLine(e, typeW, inner-fixed-clientW, clientW))
+	for i, e := range visible {
+		gutter := "  "
+		if m.mode == modeSelect && m.offset+i == m.cursor {
+			gutter = fg(cViolet).Bold(true).Render("▸ ")
+		}
+		lines = append(lines, gutter+logLine(e, typeW, inner-fixed-clientW, clientW))
 	}
 	return panel(w, h, lines)
+}
+
+// detailLine explains the selected query: why it was blocked, which
+// rule matched, which client asked.
+func (m model) detailLine(inner int) string {
+	e, ok := m.selected()
+	if !ok {
+		return sDim.Render("nothing selected")
+	}
+	parts := []string{e.Name}
+	if e.Rule != "" {
+		why := "rule " + e.Rule
+		if e.Via != "" {
+			why += " via " + e.Via
+		}
+		parts = append(parts, why)
+	}
+	parts = append(parts, "from "+e.Client)
+	return fg(cViolet).Render(dash.Truncate(strings.Join(parts, " · "), inner))
 }
 
 func logLine(e events.Event, typeW, nameW, clientW int) string {
@@ -300,15 +361,80 @@ func (m model) clientsPanel(w, h int) string {
 	return panel(w, h, lines)
 }
 
-func (m model) footer(w int) string {
-	keys := []struct{ k, d string }{{"q", "quit"}, {"p", "pause"}, {"f", "filter"}, {"c", "clear"}}
-	left := " "
-	for _, k := range keys {
-		left += sKey.Render(k.k) + sDim.Render(" "+k.d+"   ")
+var helpKeys = []struct{ key, what string }{
+	{"↑ ↓  k j", "select a query (freezes the log)"},
+	{"pgup pgdn", "move a page"},
+	{"a  /  A", "allow the selected name  /  its whole domain"},
+	{"b  /  B", "block the selected name  /  its whole domain"},
+	{"esc", "back to the live log, or clear the search"},
+	{"/", "search the log by name or client"},
+	{"f", "filter: all, blocked, suspicious"},
+	{"p", "pause the live log"},
+	{"c", "clear the log and alerts"},
+	{"r", "reload the blocklists"},
+	{"R", "your rules (d deletes one)"},
+	{"?", "this help"},
+	{"q", "quit"},
+}
+
+func (m model) helpScreen(w, h int) string {
+	lines := []string{sTitle.Render("Keys"), ""}
+	for _, k := range helpKeys {
+		lines = append(lines, sKey.Render(padRight(k.key, 12))+sText.Render(k.what))
 	}
-	// Upstream health: a green or red dot per resolver, so a failover is
-	// visible at a glance.
-	right := ""
+	lines = append(lines, "", sDim.Render("Rules cover the domain and all of its subdomains, and beat the blocklists."),
+		sDim.Render("Press any key to close."))
+	return panel(w, h, lines)
+}
+
+func (m model) rulesScreen(w, h int) string {
+	inner := w - 4
+	lines := []string{spread(inner, sTitle.Render(fmt.Sprintf("Your rules (%d)", len(m.rules))),
+		sDim.Render("↑↓ select · d delete · esc back"))}
+	if len(m.rules) == 0 {
+		lines = append(lines, "", sDim.Render("No rules yet. Select a query in the log and press a or b."))
+		return panel(w, h, lines)
+	}
+	rows := h - 3
+	start := max(0, m.rulesCursor-rows+1)
+	for i := start; i < len(m.rules) && i < start+rows; i++ {
+		r := m.rules[i]
+		gutter := "  "
+		if i == m.rulesCursor {
+			gutter = fg(cViolet).Bold(true).Render("▸ ")
+		}
+		action := fg(cGreen).Render(padRight(r.Action, 6))
+		if r.Action == "block" {
+			action = fg(cRed).Render(padRight(r.Action, 6))
+		}
+		lines = append(lines, gutter+action+" "+sText.Render(dash.Truncate(r.Domain, inner-10)))
+	}
+	return panel(w, h, lines)
+}
+
+func (m model) footer(w int) string {
+	left := " "
+	switch {
+	case m.status != "":
+		s := fg(cGreen)
+		if m.statusBad {
+			s = fg(cRed)
+		}
+		left += s.Render(dash.Truncate(m.status, w/2))
+	default:
+		keys := []struct{ k, d string }{{"?", "help"}, {"/", "search"}, {"↑↓", "select"}, {"r", "reload"}, {"R", "rules"}, {"q", "quit"}}
+		for _, k := range keys {
+			left += sKey.Render(k.k) + sDim.Render(" "+k.d+"  ")
+		}
+	}
+
+	// Refused queries: clients turned away by the allow list or rate
+	// limit. Red when nonzero, so a device blocked by mistake shows up.
+	right := sDim.Render("refused 0  ")
+	if n := m.snap.Totals.Refused; n > 0 {
+		right = fg(cRed).Render("refused "+dash.Count(n)) + "  "
+	}
+	// Upstream health: a green or red dot per resolver.
 	for _, u := range m.snap.Upstreams {
 		dot := fg(cGreen).Render("●")
 		if !u.Up {
