@@ -68,6 +68,7 @@ func main() {
 	flag.StringVar(&cfg.cacheDir, "list-cache-dir", dirs.ListCache, "where downloaded lists are kept as fallback")
 	flag.StringVar(&cfg.rulesFile, "rules", dirs.Rules, "file for your own allow and block rules (made from telescope or the API)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	check := flag.Bool("check", false, "test the upstreams and the listen address, then exit")
 	flag.DurationVar(&cfg.refresh, "refresh", 24*time.Hour, "reload lists this often, 0 disables")
 	flag.DurationVar(&cfg.timeout, "timeout", 2*time.Second, "timeout for each upstream attempt")
 	flag.IntVar(&cfg.cacheSize, "cache-size", 10000, "max cached replies, 0 disables the cache")
@@ -83,18 +84,20 @@ func main() {
 		fmt.Println("eventhorizon", version.String())
 		return
 	}
+	if *check {
+		os.Exit(runCheck(os.Stdout, cfg.listen, splitList(cfg.upstream), cfg.timeout))
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	log.Info("eventhorizon starting", "version", version.String())
 
-	for _, s := range strings.Split(blocklists, ",") {
-		if s = strings.TrimSpace(s); s != "" {
-			cfg.sources = append(cfg.sources, s)
-			if strings.HasPrefix(strings.ToLower(s), "http://") {
-				log.Warn("blocklist is downloaded without encryption; anyone on the path can change it, use https", "url", s)
-			}
+	cfg.sources = splitList(blocklists)
+	for _, s := range cfg.sources {
+		if strings.HasPrefix(strings.ToLower(s), "http://") {
+			log.Warn("blocklist is downloaded without encryption; anyone on the path can change it, use https", "url", s)
 		}
 	}
+
 	var err error
 	if cfg.queryLog, err = server.ParseQueryLog(queryLog); err != nil {
 		log.Error("bad flag", "err", err)
@@ -129,13 +132,7 @@ func run(log *slog.Logger, cfg config) error {
 	hub := events.NewHub()
 	st := stats.New(time.Now())
 
-	var upstreams []string
-	for _, u := range strings.Split(cfg.upstream, ",") {
-		if u = strings.TrimSpace(u); u != "" {
-			upstreams = append(upstreams, u)
-		}
-	}
-	pool, err := upstream.New(upstreams, cfg.timeout)
+	pool, err := upstream.New(splitList(cfg.upstream), cfg.timeout)
 	if err != nil {
 		return err
 	}
@@ -381,4 +378,15 @@ func localRoutes(fwd *forward.Table, timeout time.Duration) (func(string) *upstr
 func isTerminal(f *os.File) bool {
 	info, err := f.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+// splitList turns "a, b,,c" into [a b c].
+func splitList(s string) []string {
+	var out []string
+	for _, item := range strings.Split(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
