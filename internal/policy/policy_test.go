@@ -123,3 +123,35 @@ func TestUserRulesBeatLists(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadAdblocklist(t *testing.T) {
+	list := `[Adblock Plus 2.0]
+! Title: example adblock list
+||ads.example^
+||partial.example^$third-party
+||cdn.example/banner.js^
+news.example##.cookie-banner
+plain.example
+`
+
+	s := NewSet()
+	n, err := s.Load(strings.NewReader(list))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("loaded %d domains, want 2 (ads.example and plain.example)", n)
+	}
+	for name, want := range map[string]bool{
+		"ads.example":     true,
+		"cdn.ads.example": true,
+		"plain.example":   true,
+		"partial.example": false,
+		"cdn.example":     false,
+		"news.example":    false,
+	} {
+		if _, got := s.Match(name); got != want {
+			t.Errorf("Match(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

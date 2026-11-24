@@ -79,9 +79,15 @@ func (s *Set) Match(name string) (string, bool) {
 func (s *Set) Load(r io.Reader) (int, error) {
 	added := 0
 	sc := bufio.NewScanner(r)
+
 	for sc.Scan() {
+		raw := strings.TrimSpace(sc.Text())
+		if skipLine(raw) {
+			continue
+		}
 		line, _, _ := strings.Cut(sc.Text(), "#")
 		fields := strings.Fields(line)
+
 		if len(fields) == 0 {
 			continue
 		}
@@ -90,12 +96,46 @@ func (s *Set) Load(r io.Reader) (int, error) {
 			fields = fields[1:]
 		}
 		for _, f := range fields {
-			if s.Add(f) {
+			if s.Add(cleanEntry(f)) {
 				added++
 			}
 		}
 	}
 	return added, sc.Err()
+}
+
+// skipLne reports lines that hold no domains: adblock comments ("!"),
+// headers ("[Adblock Plus 2.0]") and element hiding rules such as
+// "example.com##.banner". Those hide part of a page; reading them as
+// domains would block example.com itself.
+func skipLine(line string) bool {
+	if strings.HasPrefix(line, "!") || strings.HasPrefix(line, "[") {
+		return true
+	}
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return true
+	}
+	first := fields[0]
+	return strings.Contains(first, "#") && !strings.HasPrefix(first, "#")
+}
+
+// cleanEntry turns one list entry into a plain domain, or "" to skip it.
+// Besides plain domains it understands the adblock style "||example.com^",
+// which means the domain and all its subdomains. Adblock rules with a
+// path or options ("||example.com/ad.js^", "||example.com^$third-party")
+// only block some requests, so a DNS blocker must skip them rather than
+// block the whole domain.
+func cleanEntry(f string) string {
+	rest, ok := strings.CutPrefix(f, "||")
+	if !ok {
+		return f
+	}
+	domain, ok := strings.CutSuffix(rest, "^")
+	if !ok || strings.ContainsAny(domain, "/*$") {
+		return ""
+	}
+	return domain
 }
 
 // Decision is the outcome for one name, with the rule that caused it.
