@@ -155,3 +155,31 @@ plain.example
 		}
 	}
 }
+
+func TestLoadWildcardList(t *testing.T) {
+	list := `*.ads.example
+*.tracker.example
+ads*.broken.example
+plain.example
+`
+	s := NewSet()
+	n, err := s.Load(strings.NewReader(list))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Errorf("loaded %d domains, want 3 (the pattern line must be skipped)", n)
+	}
+	for name, want := range map[string]bool{
+		"ads.example":         true,
+		"cdn.ads.example":     true,
+		"tracker.example":     true,
+		"plain.example":       true,
+		"ads1.broken.example": false,
+		"broken.example":      false,
+	} {
+		if _, got := s.Match(name); got != want {
+			t.Errorf("Match(%q) = %v, want %v", name, got, want)
+		}
+	}
+}
