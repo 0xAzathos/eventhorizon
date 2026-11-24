@@ -13,7 +13,6 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +25,7 @@ import (
 	"github.com/0xAzathos/eventhorizon/internal/forward"
 	"github.com/0xAzathos/eventhorizon/internal/guard"
 	"github.com/0xAzathos/eventhorizon/internal/lists"
+	"github.com/0xAzathos/eventhorizon/internal/paths"
 	"github.com/0xAzathos/eventhorizon/internal/policy"
 	"github.com/0xAzathos/eventhorizon/internal/psl"
 	"github.com/0xAzathos/eventhorizon/internal/rules"
@@ -58,13 +58,14 @@ type config struct {
 func main() {
 	var cfg config
 	var blocklists, queryLog string
+	dirs := paths.OS().Default()
 	flag.StringVar(&cfg.listen, "listen", "127.0.0.1:5300", "address to listen on (UDP and TCP)")
 	flag.StringVar(&cfg.upstream, "upstream", "tls://1.1.1.1#cloudflare-dns.com,tls://9.9.9.9#dns.quad9.net", "comma separated resolvers tried in order: IP[:port] for plain DNS, tls://IP[:port]#name for DNS over TLS")
 	flag.StringVar(&cfg.forward, "forward", "", "send your own zones to your router instead of the upstreams, e.g. lan=192.168.1.1,home.arpa=192.168.1.1")
 	flag.StringVar(&blocklists, "blocklist", "", "comma separated blocklist files or http(s) URLs")
 	flag.StringVar(&cfg.allowlist, "allowlist", "", "allowlist file (plain domains)")
-	flag.StringVar(&cfg.cacheDir, "list-cache-dir", defaultListCacheDir(), "where downloaded lists are kept as fallback")
-	flag.StringVar(&cfg.rulesFile, "rules", defaultRulesFile(), "file for your own allow and block rules (made from telescope or the API)")
+	flag.StringVar(&cfg.cacheDir, "list-cache-dir", dirs.ListCache, "where downloaded lists are kept as fallback")
+	flag.StringVar(&cfg.rulesFile, "rules", dirs.Rules, "file for your own allow and block rules (made from telescope or the API)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.DurationVar(&cfg.refresh, "refresh", 24*time.Hour, "reload lists this often, 0 disables")
 	flag.DurationVar(&cfg.timeout, "timeout", 2*time.Second, "timeout for each upstream attempt")
@@ -103,24 +104,6 @@ func main() {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
 	}
-}
-
-// defaultRulesFile keeps rules with the service's other state, or next to
-// where eventhorizon runs during development.
-func defaultRulesFile() string {
-	if dir := os.Getenv("STATE_DIRECTORY"); dir != "" {
-		return filepath.Join(dir, "rules.txt")
-	}
-	return "eventhorizon-rules.txt"
-}
-
-// defaultListCacheDir uses the directory systemd creates for StateDirectory=
-// when running as a service, and a local folder otherwise.
-func defaultListCacheDir() string {
-	if dir := os.Getenv("STATE_DIRECTORY"); dir != "" {
-		return dir
-	}
-	return ".list-cache"
 }
 
 func run(log *slog.Logger, cfg config) error {
@@ -359,7 +342,7 @@ func reload(ctx context.Context, log *slog.Logger, loader *lists.Loader, ctl *co
 }
 
 // localRoutes opens one pool for each server in the -forward rules and
-// returns the server's Local function, plus a function that cloese them.
+// returns the server's Local function, plus a function that close them.
 func localRoutes(fwd *forward.Table, timeout time.Duration) (func(string) *upstream.Pool, func(), error) {
 	pools := map[netip.AddrPort]*upstream.Pool{}
 	closeAll := func() {
