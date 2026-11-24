@@ -43,6 +43,8 @@ func actionStyle(action string) (symbol string, s lipgloss.Style) {
 		return "◆", fg(cBlue)
 	case "servfail":
 		return "!", fg(cAmber)
+	case "local":
+		return "○", fg(cDim)
 	default:
 		return "●", fg(cGreen)
 	}

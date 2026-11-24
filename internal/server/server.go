@@ -80,6 +80,15 @@ func (s *Server) BlocklistSize() int {
 	return 0
 }
 
+// localPool returns the server from -forward whose zone covers name, or
+// nil when no rule does.
+func (s *Server) localPool(name string) *upstream.Pool {
+	if s.Local == nil {
+		return nil
+	}
+	return s.Local(name)
+}
+
 // pickPool returns the pool that should answer name: the local server
 // from -forward when one of its zones covers the name, else the upstreams.
 func (s *Server) pickPool(name string) *upstream.Pool {
@@ -121,6 +130,8 @@ func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
 	var action string
 	if decision.Blocked {
 		resp, action = q.Blocked(), "blocked"
+	} else if localOnly(q.Name, q.Type) && s.localPool(q.Name) == nil {
+		resp, action = q.NXDomain(), "local"
 	} else if cached, ok := s.Cache.Get(q, time.Now(), maxSize); ok {
 		resp, action = cached, "cached"
 	} else {
