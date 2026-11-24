@@ -174,6 +174,7 @@ The footer shows each upstream resolver's health, whether it is encrypted, the b
 | `-allow-clients` | `loopback,private` | CIDRs, addresses, or the groups `loopback`, `private`, `any` |
 | `-rate-limit` | `200` | queries per second per client, bursts up to 5x, `0` disables |
 | `-version` | | print the version and exit |
+| `-check` | | test the upstreams and the listen address, then exit; useful when something does not work |
 
 Under systemd, rules and saved lists live in `/var/lib/eventhorizon`. Otherwise they go in your user folders:
 
