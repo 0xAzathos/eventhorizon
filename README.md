@@ -161,8 +161,8 @@ The footer shows each upstream resolver's health, whether it is encrypted, the b
 | `-forward` | none | your own zones and the server that knows them, e.g. `lan=192.168.1.1`; those names are never sent to the upstreams |
 | `-blocklist` | none | comma separated files or http(s) URLs |
 | `-allowlist` | none | file of domains that are never blocked |
-| `-rules` | state dir `rules.txt` | where your own rules are saved |
-| `-list-cache-dir` | state dir | last good copy of each downloaded list |
+| `-rules` | see below | where your own rules are saved |
+| `-list-cache-dir` | see below | last good copy of each downloaded list |
 | `-refresh` | `24h` | how often lists reload, `0` disables |
 | `-timeout` | `2s` | time per upstream attempt |
 | `-cache-size` | `10000` | cached replies, `0` disables |
@@ -175,7 +175,15 @@ The footer shows each upstream resolver's health, whether it is encrypted, the b
 | `-rate-limit` | `200` | queries per second per client, bursts up to 5x, `0` disables |
 | `-version` | | print the version and exit |
 
-Without systemd, the state dir is the current directory: lists go in `.list-cache` and rules in `eventhorizon-rules.txt`.
+Under systemd, rules and saved lists live in `/var/lib/eventhorizon`. Otherwise they go in your user folders:
+
+| | rules | saved lists |
+| --- | --- | --- |
+| Linux | `~/.config/eventhorizon/rules.txt` | `~/.cache/eventhorizon/lists` |
+| macOS | `~/Library/Application Support/eventhorizon/rules.txt` | `~/Library/Caches/eventhorizon/lists` |
+| Windows | `%AppData%\eventhorizon\rules.txt` | `%LocalAppData%\eventhorizon\lists` |
+
+If an older version left `eventhorizon-rules.txt` or `.list-cache` in the folder you start eventhorizon from, those keep being used.
 
 ## Rule order
 
