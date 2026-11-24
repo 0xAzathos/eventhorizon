@@ -81,6 +81,22 @@ func (t *Table) Lookup(name string) (netip.AddrPort, bool) {
 	}
 }
 
+// Servers list each server a rule points at, once
+func (t *Table) Servers() []netip.AddrPort {
+	if t == nil {
+		return nil
+	}
+	seen := map[netip.AddrPort]bool{}
+	var out []netip.AddrPort
+	for _, ap := range t.zones {
+		if !seen[ap] {
+			seen[ap] = true
+			out = append(out, ap)
+		}
+	}
+	return out
+}
+
 // Len reports how many zones have a rule.
 func (t *Table) Len() int {
 	if t == nil {

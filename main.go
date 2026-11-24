@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/0xAzathos/eventhorizon/internal/control"
 	"github.com/0xAzathos/eventhorizon/internal/detect"
 	"github.com/0xAzathos/eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/forward"
 	"github.com/0xAzathos/eventhorizon/internal/guard"
 	"github.com/0xAzathos/eventhorizon/internal/lists"
 	"github.com/0xAzathos/eventhorizon/internal/policy"
@@ -36,6 +38,7 @@ import (
 type config struct {
 	listen      string
 	upstream    string
+	forward     string
 	sources     []string
 	allowlist   string
 	cacheDir    string
@@ -57,6 +60,7 @@ func main() {
 	var blocklists, queryLog string
 	flag.StringVar(&cfg.listen, "listen", "127.0.0.1:5300", "address to listen on (UDP and TCP)")
 	flag.StringVar(&cfg.upstream, "upstream", "tls://1.1.1.1#cloudflare-dns.com,tls://9.9.9.9#dns.quad9.net", "comma separated resolvers tried in order: IP[:port] for plain DNS, tls://IP[:port]#name for DNS over TLS")
+	flag.StringVar(&cfg.forward, "forward", "", "send your own zones to your router instead of the upstreams, e.g. lan=192.168.1.1,home.arpa=192.168.1.1")
 	flag.StringVar(&blocklists, "blocklist", "", "comma separated blocklist files or http(s) URLs")
 	flag.StringVar(&cfg.allowlist, "allowlist", "", "allowlist file (plain domains)")
 	flag.StringVar(&cfg.cacheDir, "list-cache-dir", defaultListCacheDir(), "where downloaded lists are kept as fallback")
@@ -153,6 +157,19 @@ func run(log *slog.Logger, cfg config) error {
 	}
 	defer pool.Close()
 
+	fwd, err := forward.Parse(cfg.forward)
+	if err != nil {
+		return err
+	}
+	local, closeLocal, err := localRoutes(fwd, cfg.timeout)
+	if err != nil {
+		return err
+	}
+	defer closeLocal()
+	if fwd.Len() > 0 {
+		log.Info("forwarding local zones", "rules", cfg.forward)
+	}
+
 	acl, err := guard.ParseACL(cfg.clients)
 	if err != nil {
 		return err
@@ -173,6 +190,7 @@ func run(log *slog.Logger, cfg config) error {
 		Events:   hub,
 		Stats:    st,
 		Upstream: pool,
+		Local:    local,
 		Log:      log,
 		QueryLog: cfg.queryLog,
 	}
@@ -338,4 +356,31 @@ func reload(ctx context.Context, log *slog.Logger, loader *lists.Loader, ctl *co
 	ctl.SetLists(block, allow)
 	log.Info("lists active", "blocked_domains", block.Len(), "allowed_domains", allow.Len())
 	return nil
+}
+
+// localRoutes opens one pool for each server in the -forward rules and
+// returns the server's Local function, plus a function that cloese them.
+func localRoutes(fwd *forward.Table, timeout time.Duration) (func(string) *upstream.Pool, func(), error) {
+	pools := map[netip.AddrPort]*upstream.Pool{}
+	closeAll := func() {
+		for _, p := range pools {
+			p.Close()
+		}
+	}
+	for _, ap := range fwd.Servers() {
+		p, err := upstream.New([]string{ap.String()}, timeout)
+		if err != nil {
+			closeAll()
+			return nil, nil, err
+		}
+		pools[ap] = p
+	}
+	route := func(name string) *upstream.Pool {
+		ap, ok := fwd.Lookup(name)
+		if !ok {
+			return nil
+		}
+		return pools[ap]
+	}
+	return route, closeAll, nil
 }

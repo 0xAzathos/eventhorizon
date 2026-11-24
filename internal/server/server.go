@@ -47,13 +47,14 @@ func ParseQueryLog(s string) (QueryLog, error) {
 }
 
 type Server struct {
-	Cache    *cache.Cache     // nil disables caching
-	Detect   *detect.Detector // nil disables threat detection
-	Events   *events.Hub      // nil: no live viewers
-	Stats    *stats.Stats     // nil: no dashboard statistics
-	Upstream *upstream.Pool   // resolvers with failover, UDP and TCP
-	ACL      *guard.ACL       // nil: every client may ask
-	Limit    *guard.Limiter   // nil: no rate limit
+	Cache    *cache.Cache                     // nil disables caching
+	Detect   *detect.Detector                 // nil disables threat detection
+	Events   *events.Hub                      // nil: no live viewers
+	Stats    *stats.Stats                     // nil: no dashboard statistics
+	Upstream *upstream.Pool                   // resolvers with failover, UDP and TCP
+	Local    func(name string) *upstream.Pool // your own zones (-forward); nil or a nil result means Upstream
+	ACL      *guard.ACL                       // nil: every client may ask
+	Limit    *guard.Limiter                   // nil: no rate limit
 	Log      *slog.Logger
 	QueryLog QueryLog
 
@@ -77,6 +78,17 @@ func (s *Server) BlocklistSize() int {
 		return p.Block.Len()
 	}
 	return 0
+}
+
+// pickPool returns the pool that should answer name: the local server
+// from -forward when one of its zones covers the name, else the upstreams.
+func (s *Server) pickPool(name string) *upstream.Pool {
+	if s.Local != nil {
+		if p := s.Local(name); p != nil {
+			return p
+		}
+	}
+	return s.Upstream
 }
 
 // respond turns one query into one reply. proto is "udp" or "tcp" and is
@@ -113,7 +125,7 @@ func (s *Server) respond(msg []byte, client net.Addr, proto string) []byte {
 		resp, action = cached, "cached"
 	} else {
 		var res upstream.Result
-		res, err = s.Upstream.Exchange(proto, msg, q.ID)
+		res, err = s.pickPool(q.Name).Exchange(proto, msg, q.ID)
 		resp = res.Resp
 		if res.Attempts > 1 && err == nil {
 			s.Log.Debug("answered after failover", "name", q.Name, "server", res.Server, "attempts", res.Attempts)
