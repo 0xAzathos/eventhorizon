@@ -210,6 +210,15 @@ func (q *Query) Blocked() []byte {
 	return out
 }
 
+// NXDomain builds a "no such name" answer that echoes the question.
+// Stub resolvers check that a reply repeats their question, so a header
+// only error would be thrown away as not matching.
+func (q *Query) NXDomain() []byte {
+	out := make([]byte, 0, q.qEnd)
+	out = appendHeader(out, q.ID, responseFlags(q.Flags, RcodeNXDomain), 1, 0)
+	return append(out, q.raw[headerLen:q.qEnd]...)
+}
+
 // ErrorResponse builds a header only reply with the given rcode. Returns nil
 // when no reply should be sent: the input is too short to carry an ID, or
 // it is itself a response (answering responses can cause loops).
