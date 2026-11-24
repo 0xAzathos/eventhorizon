@@ -84,14 +84,15 @@ func main() {
 		fmt.Println("eventhorizon", version.String())
 		return
 	}
+
+	cfg.sources = splitList(blocklists)
 	if *check {
-		os.Exit(runCheck(os.Stdout, cfg.listen, splitList(cfg.upstream), cfg.timeout))
+		os.Exit(runCheck(os.Stdout, cfg, net.DefaultResolver.LookupNetIP))
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	log.Info("eventhorizon starting", "version", version.String())
 
-	cfg.sources = splitList(blocklists)
 	for _, s := range cfg.sources {
 		if strings.HasPrefix(strings.ToLower(s), "http://") {
 			log.Warn("blocklist is downloaded without encryption; anyone on the path can change it, use https", "url", s)
@@ -175,15 +176,8 @@ func run(log *slog.Logger, cfg config) error {
 		Log:      log,
 		QueryLog: cfg.queryLog,
 	}
-	// Downloads resolve names through the upstreams, not the system: when
-	// this machine's DNS points at eventhorizon, the system resolver would
-	// ask eventhorizon itself, which is not answering yet at startup.
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DialContext = (&net.Dialer{Timeout: 30 * time.Second, Resolver: pool.Resolver()}).DialContext
-	loader := &lists.Loader{
-		Client:   &http.Client{Timeout: time.Minute, Transport: transport},
-		CacheDir: cfg.cacheDir,
-	}
+
+	loader := newLoader(pool, cfg.cacheDir)
 
 	// Your own rules live in their own file and are applied on top of the
 	// lists by the controller, which installs every policy from now on.
@@ -389,4 +383,17 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// newLoader makes  the blocklist downloader. Downloads resolve names
+// through the upstreams, not the system: when this machine's DNS points
+// at eventhorizon, the system resolver would ask eventhorizon itself,
+// which is not answering yet at startup.
+func newLoader(pool *upstream.Pool, cacheDir string) *lists.Loader {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{Timeout: 30 * time.Second, Resolver: pool.Resolver()}).DialContext
+	return &lists.Loader{
+		Client:   &http.Client{Timeout: time.Minute, Transport: transport},
+		CacheDir: cacheDir,
+	}
 }
