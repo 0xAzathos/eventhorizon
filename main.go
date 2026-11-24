@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -222,6 +223,14 @@ func run(log *slog.Logger, cfg config) error {
 	log.Info("listening", "addr", cfg.listen, "proto", "udp+tcp", "upstream", cfg.upstream,
 		"allow_clients", cfg.clients, "rate_limit", cfg.rateLimit)
 
+	// Advice for someone trying it out in a terminal. A service's log
+	// (stdout is not a terminal there) stays free of it.
+	if isTerminal(os.Stdout) {
+		for _, h := range startupHints(runtime.GOOS, cfg.listen, srv.BlocklistSize(), cfg.apiAddr) {
+			log.Info("next: "+h.what, "how", h.how)
+		}
+	}
+
 	if cfg.apiAddr != "" {
 		// The API shows every query and can change rules. The Host check
 		// only stops web pages; anything else that can connect may send
@@ -366,4 +375,10 @@ func localRoutes(fwd *forward.Table, timeout time.Duration) (func(string) *upstr
 		return pools[ap]
 	}
 	return route, closeAll, nil
+}
+
+// isTerminal reports whether f is an interactive terminal rather than a file, pipe or journal.
+func isTerminal(f *os.File) bool {
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
