@@ -107,6 +107,8 @@ Run it on an always on machine such as a Raspberry Pi (use the `linux_arm64` or 
 2. Uncomment `AmbientCapabilities=CAP_NET_BIND_SERVICE`, which allows port 53 without root.
 3. Set your router's DHCP DNS server to that address.
 
+Your router knows the names of your devices, such as `nas.lan` or `printer.home.arpa`, but Cloudflare and Quad9 do not. Send those zones to the router with `-forward lan=192.168.1.1,home.arpa=192.168.1.1`, using the domain your router hands out. They are still checked against your blocklists and cached like any other name.
+
 Devices pick it up when they renew their lease. Only loopback and private addresses are served unless you change `-allow-clients`. Tailscale addresses are not in the private group; to serve your tailnet, use `-allow-clients loopback,private,100.64.0.0/10`.
 
 Never use `-allow-clients any` on a machine with a public address, such as a VPS: that makes it an open resolver anyone can abuse.
@@ -156,6 +158,7 @@ The footer shows each upstream resolver's health, whether it is encrypted, the b
 | --- | --- | --- |
 | `-listen` | `127.0.0.1:5300` | address for DNS over UDP and TCP |
 | `-upstream` | Cloudflare and Quad9 over TLS | resolvers tried in order: `IP[:port]` for plain DNS, `tls://IP[:port]#name` for DNS over TLS; also used to look up blocklist downloads |
+| `-forward` | none | your own zones and the server that knows them, e.g. `lan=192.168.1.1`; those names are never sent to the upstreams |
 | `-blocklist` | none | comma separated files or http(s) URLs |
 | `-allowlist` | none | file of domains that are never blocked |
 | `-rules` | state dir `rules.txt` | where your own rules are saved |

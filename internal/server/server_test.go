@@ -16,6 +16,7 @@ import (
 	"github.com/0xAzathos/eventhorizon/internal/detect"
 	"github.com/0xAzathos/eventhorizon/internal/dnsmsg"
 	"github.com/0xAzathos/eventhorizon/internal/events"
+	"github.com/0xAzathos/eventhorizon/internal/forward"
 	"github.com/0xAzathos/eventhorizon/internal/guard"
 	"github.com/0xAzathos/eventhorizon/internal/policy"
 	"github.com/0xAzathos/eventhorizon/internal/psl"
@@ -674,5 +675,40 @@ func TestRateLimit(t *testing.T) {
 	}
 	if n := st.Snapshot(time.Now(), 1).Totals.Refused; n != 3 {
 		t.Errorf("refused = %d, want 3", n)
+	}
+}
+
+func TestLocalZonesGoToTheirServer(t *testing.T) {
+	up, upHits := fakeUpstream(t)
+	router, routerHits := fakeUpstream(t)
+	table, err := forward.Parse("lan=" + router)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lan := newPool(t, router)
+
+	srv := &Server{
+		Upstream: newPool(t, up),
+		Local: func(name string) *upstream.Pool {
+			if _, ok := table.Lookup(name); ok {
+				return lan
+			}
+			return nil
+		},
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	srv.SetPolicy(&policy.Policy{Block: policy.NewSet()})
+	pc, ln := listenBoth(t)
+	go srv.ServeUDP(pc)
+	go srv.ServeTCP(ln)
+	addr := pc.LocalAddr().String()
+
+	exchangeUDP(t, addr, query(1, "nas.lan", 1))
+	if routerHits.udp.Load() != 1 || upHits.udp.Load() != 0 {
+		t.Errorf("nas.lan: router got %d, upstream got %d; want 1 and 0", routerHits.udp.Load(), upHits.udp.Load())
+	}
+	exchangeUDP(t, addr, query(2, "example.com", 1))
+	if routerHits.udp.Load() != 1 || upHits.udp.Load() != 1 {
+		t.Errorf("example.com: router got %d, upstream got %d; want 1 and 1", routerHits.udp.Load(), upHits.udp.Load())
 	}
 }
