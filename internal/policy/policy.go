@@ -121,21 +121,26 @@ func skipLine(line string) bool {
 }
 
 // cleanEntry turns one list entry into a plain domain, or "" to skip it.
-// Besides plain domains it understands the adblock style "||example.com^",
-// which means the domain and all its subdomains. Adblock rules with a
-// path or options ("||example.com/ad.js^", "||example.com^$third-party")
-// only block some requests, so a DNS blocker must skip them rather than
-// block the whole domain.
+// Besides plain domains it understands two ways lists write "this domain
+// and al its subdomains": the adblock style "||example.com^" and the
+// wildcard style "*.example.com". Adblock rules with a path or options
+// ("||example.com/ad.js^", "||example.com^$third-party") only block some
+// requests, so a DNS blocker must skip them rather than block the whole
+// domain. So must any other entry with pattern characters left in it.
 func cleanEntry(f string) string {
-	rest, ok := strings.CutPrefix(f, "||")
-	if !ok {
-		return f
+	if rest, ok := strings.CutPrefix(f, "||"); ok {
+		domain, ok := strings.CutSuffix(rest, "^")
+		if !ok {
+			return ""
+		}
+		f = domain
+	} else {
+		f = strings.TrimPrefix(f, "*.")
 	}
-	domain, ok := strings.CutSuffix(rest, "^")
-	if !ok || strings.ContainsAny(domain, "/*$") {
+	if strings.ContainsAny(f, "*/$^|") {
 		return ""
 	}
-	return domain
+	return f
 }
 
 // Decision is the outcome for one name, with the rule that caused it.
