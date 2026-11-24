@@ -48,6 +48,10 @@ cd eventhorizon/telescope
 go build -o telescope .
 ```
 
+### Versions
+
+Patch releases (v0.1.1, v0.1.2) hold small changes and fixes and are always safe to upgrade to. Minor releases (v0.2.0) bring bigger features, and before 1.0 they are also the only place breaking changes go, such as renamed flags, new defaults or changed file formats. Those are listed at the top of the release notes.
+
 ## Quick start
 
 ```sh
